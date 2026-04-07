@@ -4,6 +4,7 @@ using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain;
 using Jellywatch.Api.Helpers;
 using Jellywatch.Api.Infrastructure;
+using Jellywatch.Api.Services.Jellyfin;
 using Jellywatch.Api.Services.Metadata;
 
 namespace Jellywatch.Api.Controllers;
@@ -13,11 +14,13 @@ public class AdminController : BaseApiController
 {
     private readonly JellywatchDbContext _context;
     private readonly IMetadataResolutionService _metadataService;
+    private readonly IJellyfinApiClient _jellyfinClient;
 
-    public AdminController(JellywatchDbContext context, IMetadataResolutionService metadataService)
+    public AdminController(JellywatchDbContext context, IMetadataResolutionService metadataService, IJellyfinApiClient jellyfinClient)
     {
         _context = context;
         _metadataService = metadataService;
+        _jellyfinClient = jellyfinClient;
     }
 
     private async Task<bool> IsAdminAsync() =>
@@ -66,6 +69,65 @@ public class AdminController : BaseApiController
             .ToListAsync();
 
         return Ok(profiles);
+    }
+
+    // ── Jellyfin Users (for adding profiles without login) ───────────────────
+
+    [HttpGet("jellyfin-users")]
+    public async Task<IActionResult> GetJellyfinUsers()
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        var jellyfinUsers = await _jellyfinClient.GetUsersAsync();
+        var existingJellyfinIds = await _context.Profiles
+            .Select(p => p.JellyfinUserId)
+            .ToListAsync();
+
+        var result = jellyfinUsers.Select(u => new
+        {
+            u.Id,
+            u.Name,
+            u.IsAdministrator,
+            AlreadyTracked = existingJellyfinIds.Contains(u.Id)
+        });
+
+        return Ok(result);
+    }
+
+    [HttpPost("add-profile")]
+    public async Task<IActionResult> AddProfileFromJellyfin([FromBody] AddProfileRequest request)
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        if (string.IsNullOrWhiteSpace(request.JellyfinUserId) || string.IsNullOrWhiteSpace(request.DisplayName))
+            return BadRequest(new { message = "JellyfinUserId and DisplayName are required." });
+
+        var exists = await _context.Profiles
+            .AnyAsync(p => p.JellyfinUserId == request.JellyfinUserId);
+
+        if (exists)
+            return Conflict(new { message = "A profile for this Jellyfin user already exists." });
+
+        var profile = new Profile
+        {
+            JellyfinUserId = request.JellyfinUserId,
+            DisplayName = request.DisplayName,
+            IsJoint = false,
+            UserId = null
+        };
+
+        _context.Profiles.Add(profile);
+        await _context.SaveChangesAsync();
+
+        return Ok(new ProfileDto
+        {
+            Id = profile.Id,
+            DisplayName = profile.DisplayName,
+            JellyfinUserId = profile.JellyfinUserId,
+            IsJoint = profile.IsJoint,
+            UserId = profile.UserId,
+            CreatedAt = profile.CreatedAt
+        });
     }
 
     // ── Import Queue ─────────────────────────────────────────────────────────

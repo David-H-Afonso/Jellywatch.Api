@@ -76,3 +76,9 @@ public class PropagationRuleCreateDto
     public int TargetProfileId { get; set; }
     public bool IsActive { get; set; } = true;
 }
+
+public class AddProfileRequest
+{
+    public string JellyfinUserId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+}
