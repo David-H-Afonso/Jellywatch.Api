@@ -32,6 +32,7 @@ public class JellywatchDbContext : DbContext
     public DbSet<ProviderCacheEntry> ProviderCacheEntries { get; set; }
     public DbSet<JellyfinLibraryItem> JellyfinLibraryItems { get; set; }
     public DbSet<BlacklistedItem> BlacklistedItems { get; set; }
+    public DbSet<ProfileMediaBlock> ProfileMediaBlocks { get; set; }
 
     public override int SaveChanges()
     {
@@ -66,6 +67,7 @@ public class JellywatchDbContext : DbContext
                 else if (entry.Entity is MediaTranslation mt) { mt.CreatedAt = now; }
                 else if (entry.Entity is ImportQueueItem iq) { iq.CreatedAt = now; }
                 else if (entry.Entity is BlacklistedItem bl) { bl.CreatedAt = now; }
+                else if (entry.Entity is ProfileMediaBlock pmb) { pmb.CreatedAt = now; }
                 else if (entry.Entity is JellyfinLibraryItem jli) { jli.CreatedAt = now; jli.UpdatedAt = now; }
             }
             else if (entry.State == EntityState.Modified)

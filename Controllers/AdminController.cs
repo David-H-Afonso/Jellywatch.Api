@@ -296,6 +296,42 @@ public class AdminController : BaseApiController
         return Ok(new { message = $"Refreshed images for {count} items", count });
     }
 
+    // ── Profile purge ──────────────────────────────────────────────────────
+
+    [HttpDelete("profiles/{profileId:int}/media")]
+    public async Task<IActionResult> PurgeProfileMedia(int profileId)
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        var profile = await _context.Profiles.FindAsync(profileId);
+        if (profile is null) return NotFound(new { message = "Profile not found" });
+
+        var watchStates = await _context.ProfileWatchStates
+            .Where(ws => ws.ProfileId == profileId)
+            .ToListAsync();
+        _context.ProfileWatchStates.RemoveRange(watchStates);
+
+        var watchEvents = await _context.WatchEvents
+            .Where(e => e.ProfileId == profileId)
+            .ToListAsync();
+        _context.WatchEvents.RemoveRange(watchEvents);
+
+        var blocks = await _context.ProfileMediaBlocks
+            .Where(b => b.ProfileId == profileId)
+            .ToListAsync();
+        _context.ProfileMediaBlocks.RemoveRange(blocks);
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = $"Purged all media data for profile {profile.DisplayName}",
+            watchStatesRemoved = watchStates.Count,
+            watchEventsRemoved = watchEvents.Count,
+            blocksRemoved = blocks.Count
+        });
+    }
+
     // ── Blacklist ─────────────────────────────────────────────────────────────
 
     [HttpGet("blacklist")]
@@ -368,5 +404,34 @@ public class AdminController : BaseApiController
         await _context.SaveChangesAsync();
 
         return NoContent();
+    }
+
+    [HttpGet("profile-blocks")]
+    public async Task<IActionResult> GetAllProfileBlocks()
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        var blocks = await _context.ProfileMediaBlocks
+            .Include(b => b.Profile)
+            .Include(b => b.MediaItem)
+                .ThenInclude(m => m.Translations)
+            .OrderByDescending(b => b.CreatedAt)
+            .Select(b => new AdminProfileBlockDto
+            {
+                Id = b.Id,
+                ProfileId = b.ProfileId,
+                ProfileName = b.Profile.DisplayName,
+                MediaItemId = b.MediaItemId,
+                Title = b.MediaItem.Title,
+                SpanishTitle = b.MediaItem.Translations
+                    .Where(t => t.Language.StartsWith("es") && t.Title != null)
+                    .Select(t => t.Title)
+                    .FirstOrDefault(),
+                MediaType = b.MediaItem.MediaType,
+                BlockedAt = b.CreatedAt,
+            })
+            .ToListAsync();
+
+        return Ok(blocks);
     }
 }

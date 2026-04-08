@@ -97,21 +97,49 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 episodeId = episode.Id;
         }
 
-        // Record the watch event
-        var watchEvent = new WatchEvent
+        // Record the watch event (skip if a Finished event already exists)
+        if (eventType == WatchEventType.Finished)
         {
-            ProfileId = profileId,
-            MediaItemId = mediaItemId.Value,
-            EpisodeId = episodeId,
-            MovieId = movieId,
-            JellyfinItemId = jellyfinItemId,
-            EventType = eventType,
-            PositionTicks = positionTicks,
-            Source = source,
-            Timestamp = DateTime.UtcNow,
-        };
-        _context.WatchEvents.Add(watchEvent);
-        await _context.SaveChangesAsync();
+            var alreadyExists = await _context.WatchEvents.AnyAsync(e =>
+                e.ProfileId == profileId
+                && e.MediaItemId == mediaItemId.Value
+                && e.EpisodeId == episodeId
+                && e.MovieId == movieId
+                && e.EventType == WatchEventType.Finished);
+
+            if (!alreadyExists)
+            {
+                _context.WatchEvents.Add(new WatchEvent
+                {
+                    ProfileId = profileId,
+                    MediaItemId = mediaItemId.Value,
+                    EpisodeId = episodeId,
+                    MovieId = movieId,
+                    JellyfinItemId = jellyfinItemId,
+                    EventType = eventType,
+                    PositionTicks = positionTicks,
+                    Source = source,
+                    Timestamp = DateTime.UtcNow,
+                });
+                await _context.SaveChangesAsync();
+            }
+        }
+        else
+        {
+            _context.WatchEvents.Add(new WatchEvent
+            {
+                ProfileId = profileId,
+                MediaItemId = mediaItemId.Value,
+                EpisodeId = episodeId,
+                MovieId = movieId,
+                JellyfinItemId = jellyfinItemId,
+                EventType = eventType,
+                PositionTicks = positionTicks,
+                Source = source,
+                Timestamp = DateTime.UtcNow,
+            });
+            await _context.SaveChangesAsync();
+        }
 
         // Real-time Jellyfin event always takes precedence over manual overrides
         var existingState = await _context.ProfileWatchStates
@@ -369,16 +397,22 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                     // Record a WatchEvent so the activity feed is populated
                     if (isNewOrChanged && state == WatchState.Seen)
                     {
-                        _context.WatchEvents.Add(new WatchEvent
+                        var alreadyHasFinished = await _context.WatchEvents.AnyAsync(e =>
+                            e.ProfileId == profile.Id && e.EpisodeId == episode.Id
+                            && e.EventType == WatchEventType.Finished);
+                        if (!alreadyHasFinished)
                         {
-                            ProfileId = profile.Id,
-                            MediaItemId = seriesLink.MediaItemId.Value,
-                            EpisodeId = episode.Id,
-                            JellyfinItemId = item.Id,
-                            EventType = WatchEventType.Finished,
-                            Source = SyncSource.Polling,
-                            Timestamp = item.UserData?.LastPlayedDate ?? DateTime.UtcNow,
-                        });
+                            _context.WatchEvents.Add(new WatchEvent
+                            {
+                                ProfileId = profile.Id,
+                                MediaItemId = seriesLink.MediaItemId.Value,
+                                EpisodeId = episode.Id,
+                                JellyfinItemId = item.Id,
+                                EventType = WatchEventType.Finished,
+                                Source = SyncSource.Polling,
+                                Timestamp = item.UserData?.LastPlayedDate ?? DateTime.UtcNow,
+                            });
+                        }
                     }
 
                     updatedSeriesIds.Add(seriesLink.MediaItemId.Value);
@@ -484,16 +518,22 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                     // Record a WatchEvent so the activity feed is populated
                     if (isMovieNewOrChanged && state == WatchState.Seen)
                     {
-                        _context.WatchEvents.Add(new WatchEvent
+                        var alreadyHasFinished = await _context.WatchEvents.AnyAsync(e =>
+                            e.ProfileId == profile.Id && e.MovieId == movie.Id
+                            && e.EventType == WatchEventType.Finished);
+                        if (!alreadyHasFinished)
                         {
-                            ProfileId = profile.Id,
-                            MediaItemId = movieLink.MediaItemId.Value,
-                            MovieId = movie.Id,
-                            JellyfinItemId = item.Id,
-                            EventType = WatchEventType.Finished,
-                            Source = SyncSource.Polling,
-                            Timestamp = item.UserData?.LastPlayedDate ?? DateTime.UtcNow,
-                        });
+                            _context.WatchEvents.Add(new WatchEvent
+                            {
+                                ProfileId = profile.Id,
+                                MediaItemId = movieLink.MediaItemId.Value,
+                                MovieId = movie.Id,
+                                JellyfinItemId = item.Id,
+                                EventType = WatchEventType.Finished,
+                                Source = SyncSource.Polling,
+                                Timestamp = item.UserData?.LastPlayedDate ?? DateTime.UtcNow,
+                            });
+                        }
                     }
 
                     updatedMovieIds.Add(movieLink.MediaItemId.Value);

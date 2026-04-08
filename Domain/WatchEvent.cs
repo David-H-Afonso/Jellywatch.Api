@@ -14,6 +14,7 @@ public class WatchEvent
     public long? PositionTicks { get; set; }
     public SyncSource Source { get; set; }
     public DateTime Timestamp { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public virtual Profile Profile { get; set; } = null!;
     public virtual MediaItem MediaItem { get; set; } = null!;

@@ -54,6 +54,17 @@ builder.Configuration["OmdbSettings:ApiKey"] = Environment.GetEnvironmentVariabl
 builder.Configuration["DatabaseSettings:DatabasePath"] = Environment.GetEnvironmentVariable("DATABASE_PATH")
     ?? builder.Configuration["DatabaseSettings:DatabasePath"];
 
+// CORS — parse comma-separated origins from CORS_ALLOWED_ORIGINS env var
+var corsOriginsRaw = Environment.GetEnvironmentVariable("CORS_ALLOWED_ORIGINS");
+if (!string.IsNullOrWhiteSpace(corsOriginsRaw))
+{
+    var origins = corsOriginsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    for (var i = 0; i < origins.Length; i++)
+    {
+        builder.Configuration[$"CorsSettings:AllowedOrigins:{i}"] = origins[i];
+    }
+}
+
 // Bind configuration sections to strongly-typed settings
 builder.Services.Configure<JellyfinSettings>(
     builder.Configuration.GetSection(JellyfinSettings.SectionName));

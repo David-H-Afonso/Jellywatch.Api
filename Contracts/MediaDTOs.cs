@@ -36,6 +36,7 @@ public class SeriesDetailDto
     public List<SeasonDto> Seasons { get; set; } = new();
     public decimal? UserRating { get; set; }
     public TranslationDto? SpanishTranslation { get; set; }
+    public bool IsBlocked { get; set; }
 }
 
 public class MovieListDto
@@ -66,6 +67,8 @@ public class MovieDetailDto
     public decimal? UserRating { get; set; }
     public List<ExternalRatingDto> Ratings { get; set; } = new();
     public TranslationDto? SpanishTranslation { get; set; }
+    public bool IsBlocked { get; set; }
+    public DateTime? WatchedAt { get; set; }
 }
 
 public class SeasonDto
@@ -98,6 +101,7 @@ public class EpisodeDto
     public WatchState State { get; set; }
     public bool IsManualOverride { get; set; }
     public decimal? UserRating { get; set; }
+    public DateTime? WatchedAt { get; set; }
 }
 
 public class ExternalRatingDto
@@ -117,6 +121,7 @@ public class TranslationDto
 public class WatchStateUpdateDto
 {
     public WatchState State { get; set; }
+    public DateTime? Timestamp { get; set; }
 }
 
 public class UserRatingDto
@@ -127,6 +132,9 @@ public class UserRatingDto
 public class ActivityDto
 {
     public int Id { get; set; }
+    public int MediaItemId { get; set; }
+    public int? SeriesId { get; set; }
+    public int? MovieId { get; set; }
     public string MediaTitle { get; set; } = string.Empty;
     public string? EpisodeName { get; set; }
     public int? EpisodeNumber { get; set; }
@@ -135,5 +143,30 @@ public class ActivityDto
     public WatchEventType EventType { get; set; }
     public SyncSource Source { get; set; }
     public DateTime Timestamp { get; set; }
+    public DateTime CreatedAt { get; set; }
     public string? PosterPath { get; set; }
+    public decimal? UserRating { get; set; }
+    public double? TmdbRating { get; set; }
+}
+
+public class ProfileBlockedItemDto
+{
+    public int Id { get; set; }
+    public int MediaItemId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? SpanishTitle { get; set; }
+    public MediaType MediaType { get; set; }
+    public DateTime BlockedAt { get; set; }
+}
+
+public class AdminProfileBlockDto
+{
+    public int Id { get; set; }
+    public int ProfileId { get; set; }
+    public string ProfileName { get; set; } = string.Empty;
+    public int MediaItemId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? SpanishTitle { get; set; }
+    public MediaType MediaType { get; set; }
+    public DateTime BlockedAt { get; set; }
 }

@@ -31,6 +31,10 @@ public class MoviesController : BaseApiController
         {
             baseQuery = baseQuery.Where(m =>
                 m.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+
+            // Exclude movies blocked by this profile
+            baseQuery = baseQuery.Where(m =>
+                !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId.Value && b.MediaItemId == m.MediaItemId));
         }
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -113,6 +117,16 @@ public class MoviesController : BaseApiController
             }
         }
 
+        DateTime? watchedAt = null;
+        if (profileId.HasValue && watchState == WatchState.Seen)
+        {
+            watchedAt = await _context.WatchEvents
+                .Where(e => e.ProfileId == profileId.Value && e.MovieId == movie.Id && e.EventType == WatchEventType.Finished)
+                .OrderByDescending(e => e.Timestamp)
+                .Select(e => (DateTime?)e.Timestamp)
+                .FirstOrDefaultAsync();
+        }
+
         var dto = new MovieDetailDto
         {
             Id = movie.Id,
@@ -127,6 +141,9 @@ public class MoviesController : BaseApiController
             Runtime = movie.Runtime,
             State = watchState,
             UserRating = userRating,
+            WatchedAt = watchedAt,
+            IsBlocked = profileId.HasValue && await _context.ProfileMediaBlocks
+                .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == movie.MediaItemId),
             Ratings = movie.MediaItem.ExternalRatings.Select(r => new ExternalRatingDto
             {
                 Provider = r.Provider,

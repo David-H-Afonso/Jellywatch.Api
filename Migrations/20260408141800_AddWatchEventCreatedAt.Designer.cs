@@ -3,6 +3,7 @@ using System;
 using Jellywatch.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Jellywatch.Api.Migrations
 {
     [DbContext(typeof(JellywatchDbContext))]
-    partial class JellywatchDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260408141800_AddWatchEventCreatedAt")]
+    partial class AddWatchEventCreatedAt
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.0");
@@ -500,30 +503,6 @@ namespace Jellywatch.Api.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("profile", (string)null);
-                });
-
-            modelBuilder.Entity("Jellywatch.Api.Domain.ProfileMediaBlock", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("MediaItemId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ProfileId")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("MediaItemId");
-
-                    b.HasIndex("ProfileId");
-
-                    b.ToTable("ProfileMediaBlocks");
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.ProfileNote", b =>
@@ -1093,25 +1072,6 @@ namespace Jellywatch.Api.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("Jellywatch.Api.Domain.ProfileMediaBlock", b =>
-                {
-                    b.HasOne("Jellywatch.Api.Domain.MediaItem", "MediaItem")
-                        .WithMany()
-                        .HasForeignKey("MediaItemId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Jellywatch.Api.Domain.Profile", "Profile")
-                        .WithMany()
-                        .HasForeignKey("ProfileId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("MediaItem");
-
-                    b.Navigation("Profile");
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.ProfileNote", b =>

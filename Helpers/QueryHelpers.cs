@@ -18,6 +18,14 @@ public class MediaQueryParameters : QueryParameters
     public int? ProfileId { get; set; }
 }
 
+public class ActivityQueryParameters : QueryParameters
+{
+    public string? MediaType { get; set; } // "movie" or "series"
+    public int? MediaItemId { get; set; }
+    public DateTime? DateFrom { get; set; }
+    public DateTime? DateTo { get; set; }
+}
+
 public class PagedResult<T>
 {
     public IEnumerable<T> Data { get; set; } = new List<T>();

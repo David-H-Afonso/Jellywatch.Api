@@ -16,7 +16,7 @@ public class PropagationService : IPropagationService
         _logger = logger;
     }
 
-    public async Task PropagateStateChangeAsync(int sourceProfileId, int mediaItemId, int? episodeId, int? movieId, WatchState newState)
+    public async Task PropagateStateChangeAsync(int sourceProfileId, int mediaItemId, int? episodeId, int? movieId, WatchState newState, DateTime? timestamp = null)
     {
         // Never propagate removal of watch state — only upgrades
         if (newState == WatchState.Unseen) return;
@@ -26,6 +26,20 @@ public class PropagationService : IPropagationService
             .ToListAsync();
 
         if (rules.Count == 0) return;
+
+        // If no timestamp was provided, try to look up the source profile's latest Finished event
+        if (timestamp == null && newState == WatchState.Seen)
+        {
+            var sourceEvent = await _context.WatchEvents
+                .Where(e => e.ProfileId == sourceProfileId
+                    && e.MediaItemId == mediaItemId
+                    && e.EpisodeId == episodeId
+                    && e.MovieId == movieId
+                    && e.EventType == WatchEventType.Finished)
+                .OrderByDescending(e => e.Timestamp)
+                .FirstOrDefaultAsync();
+            timestamp = sourceEvent?.Timestamp;
+        }
 
         foreach (var rule in rules)
         {
@@ -65,6 +79,30 @@ public class PropagationService : IPropagationService
             {
                 targetState.State = newState;
                 _logger.LogInformation("Upgraded state to {State} for profile {TargetId} media {MediaId}", newState, rule.TargetProfileId, mediaItemId);
+            }
+
+            // Create a WatchEvent for the target profile with the original timestamp
+            if (newState == WatchState.Seen && timestamp.HasValue)
+            {
+                var eventExists = await _context.WatchEvents.AnyAsync(e =>
+                    e.ProfileId == rule.TargetProfileId
+                    && e.MediaItemId == mediaItemId
+                    && e.EpisodeId == episodeId
+                    && e.MovieId == movieId
+                    && e.EventType == WatchEventType.Finished);
+                if (!eventExists)
+                {
+                    _context.WatchEvents.Add(new WatchEvent
+                    {
+                        ProfileId = rule.TargetProfileId,
+                        MediaItemId = mediaItemId,
+                        EpisodeId = episodeId,
+                        MovieId = movieId,
+                        EventType = WatchEventType.Finished,
+                        Source = SyncSource.Manual,
+                        Timestamp = timestamp.Value,
+                    });
+                }
             }
         }
 

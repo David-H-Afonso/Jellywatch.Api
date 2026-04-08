@@ -34,6 +34,10 @@ public class SeriesController : BaseApiController
                 s.Seasons.Any(sea => sea.Episodes.Any(ep =>
                     ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value))) ||
                 s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+
+            // Exclude series blocked by this profile
+            baseQuery = baseQuery.Where(s =>
+                !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId.Value && b.MediaItemId == s.MediaItemId));
         }
 
         // Search filter
@@ -128,12 +132,23 @@ public class SeriesController : BaseApiController
         List<ProfileWatchState> watchStates = new();
         List<ProfileWatchState> seasonRatings = new();
         decimal? userRating = null;
+        Dictionary<int, DateTime?> episodeWatchedAt = new();
         if (profileId.HasValue)
         {
             var episodeIds = series.Seasons.SelectMany(s => s.Episodes).Select(e => e.Id).ToList();
             watchStates = await _context.ProfileWatchStates
                 .Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId.HasValue && episodeIds.Contains(ws.EpisodeId.Value))
                 .ToListAsync();
+
+            var watchedAtEntries = await _context.WatchEvents
+                .Where(e => e.ProfileId == profileId.Value
+                    && e.EpisodeId.HasValue
+                    && episodeIds.Contains(e.EpisodeId!.Value)
+                    && e.EventType == WatchEventType.Finished)
+                .GroupBy(e => e.EpisodeId!.Value)
+                .Select(g => new { EpisodeId = g.Key, WatchedAt = g.Max(e => e.Timestamp) })
+                .ToListAsync();
+            episodeWatchedAt = watchedAtEntries.ToDictionary(e => e.EpisodeId, e => (DateTime?)e.WatchedAt);
 
             var seasonIds = series.Seasons.Select(s => s.Id).ToList();
             seasonRatings = await _context.ProfileWatchStates
@@ -163,6 +178,8 @@ public class SeriesController : BaseApiController
             TotalSeasons = series.TotalSeasons,
             TotalEpisodes = series.TotalEpisodes,
             UserRating = userRating,
+            IsBlocked = profileId.HasValue && await _context.ProfileMediaBlocks
+                .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == series.MediaItemId),
             Ratings = series.MediaItem.ExternalRatings.Select(r => new ExternalRatingDto
             {
                 Provider = r.Provider,
@@ -200,7 +217,8 @@ public class SeriesController : BaseApiController
                         TmdbRating = ep.TmdbRating,
                         State = ws?.State ?? WatchState.Unseen,
                         IsManualOverride = ws?.IsManualOverride ?? false,
-                        UserRating = ws?.UserRating
+                        UserRating = ws?.UserRating,
+                        WatchedAt = episodeWatchedAt.GetValueOrDefault(ep.Id)
                     };
                 }).ToList()
             }).ToList(),
