@@ -315,14 +315,51 @@ using (var scope = app.Services.CreateScope())
                 await checkCmd.ExecuteNonQueryAsync();
 
                 // Apply any genuinely new columns not covered by old migrations
-                // tvdb_id on media_item (new in this version)
-                try
+                var newColumns = new (string Table, string Column, string Type)[]
                 {
-                    checkCmd.CommandText = "ALTER TABLE media_item ADD COLUMN tvdb_id INTEGER";
-                    await checkCmd.ExecuteNonQueryAsync();
-                    logger.LogInformation("Added column tvdb_id to media_item");
+                    ("media_item", "tvdb_id", "INTEGER"),
+                    ("media_item", "original_title", "TEXT"),
+                    ("media_item", "imdb_id", "TEXT"),
+                    ("media_item", "original_language", "TEXT"),
+                    ("media_item", "genres", "TEXT"),
+                    ("episode", "air_time", "TEXT"),
+                    ("episode", "air_time_utc", "TEXT"),
+                    ("episode", "TmdbRating", "REAL"),
+                    ("season", "TmdbRating", "REAL"),
+                    ("watch_event", "CreatedAt", "TEXT"),
+                };
+                foreach (var (table, column, colType) in newColumns)
+                {
+                    try
+                    {
+                        checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
+                        await checkCmd.ExecuteNonQueryAsync();
+                        logger.LogInformation("Added column {Column} to {Table}", column, table);
+                    }
+                    catch { /* column already exists — safe to ignore */ }
                 }
-                catch { /* column already exists — safe to ignore */ }
+
+                // New tables added after the original migrations — create them if absent
+                checkCmd.CommandText = """
+                    CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
+                        "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
+                        "JellyfinItemId" TEXT NOT NULL,
+                        "DisplayName" TEXT,
+                        "Reason" TEXT,
+                        "CreatedAt" TEXT NOT NULL
+                    )
+                    """;
+                await checkCmd.ExecuteNonQueryAsync();
+
+                checkCmd.CommandText = """
+                    CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
+                        "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
+                        "ProfileId" INTEGER NOT NULL,
+                        "MediaItemId" INTEGER NOT NULL,
+                        "CreatedAt" TEXT NOT NULL
+                    )
+                    """;
+                await checkCmd.ExecuteNonQueryAsync();
 
                 logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
             }
