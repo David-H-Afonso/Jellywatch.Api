@@ -314,55 +314,57 @@ using (var scope = app.Services.CreateScope())
                 checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
                 await checkCmd.ExecuteNonQueryAsync();
 
-                // Apply any genuinely new columns not covered by old migrations
-                var newColumns = new (string Table, string Column, string Type)[]
-                {
-                    ("media_item", "tvdb_id", "INTEGER"),
-                    ("media_item", "original_title", "TEXT"),
-                    ("media_item", "imdb_id", "TEXT"),
-                    ("media_item", "original_language", "TEXT"),
-                    ("media_item", "genres", "TEXT"),
-                    ("episode", "air_time", "TEXT"),
-                    ("episode", "air_time_utc", "TEXT"),
-                    ("episode", "TmdbRating", "REAL"),
-                    ("season", "TmdbRating", "REAL"),
-                    ("watch_event", "CreatedAt", "TEXT"),
-                };
-                foreach (var (table, column, colType) in newColumns)
-                {
-                    try
-                    {
-                        checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
-                        await checkCmd.ExecuteNonQueryAsync();
-                        logger.LogInformation("Added column {Column} to {Table}", column, table);
-                    }
-                    catch { /* column already exists — safe to ignore */ }
-                }
-
-                // New tables added after the original migrations — create them if absent
-                checkCmd.CommandText = """
-                    CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
-                        "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
-                        "JellyfinItemId" TEXT NOT NULL,
-                        "DisplayName" TEXT,
-                        "Reason" TEXT,
-                        "CreatedAt" TEXT NOT NULL
-                    )
-                    """;
-                await checkCmd.ExecuteNonQueryAsync();
-
-                checkCmd.CommandText = """
-                    CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
-                        "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
-                        "ProfileId" INTEGER NOT NULL,
-                        "MediaItemId" INTEGER NOT NULL,
-                        "CreatedAt" TEXT NOT NULL
-                    )
-                    """;
-                await checkCmd.ExecuteNonQueryAsync();
-
                 logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
             }
+
+            // Always run on any existing DB — idempotent column/table additions.
+            // Covers: pre-squash upgrades AND DBs that were already patched but still
+            // missing columns added after the original migrations were created.
+            var newColumns = new (string Table, string Column, string Type)[]
+            {
+                ("media_item", "tvdb_id", "INTEGER"),
+                ("media_item", "original_title", "TEXT"),
+                ("media_item", "imdb_id", "TEXT"),
+                ("media_item", "original_language", "TEXT"),
+                ("media_item", "genres", "TEXT"),
+                ("episode", "air_time", "TEXT"),
+                ("episode", "air_time_utc", "TEXT"),
+                ("episode", "TmdbRating", "REAL"),
+                ("season", "TmdbRating", "REAL"),
+                ("watch_event", "CreatedAt", "TEXT"),
+            };
+            foreach (var (table, column, colType) in newColumns)
+            {
+                try
+                {
+                    checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
+                    await checkCmd.ExecuteNonQueryAsync();
+                    logger.LogInformation("Added column {Column} to {Table}", column, table);
+                }
+                catch { /* column already exists — safe to ignore */ }
+            }
+
+            // New tables — create them if absent (safe to run every startup)
+            checkCmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
+                    "JellyfinItemId" TEXT NOT NULL,
+                    "DisplayName" TEXT,
+                    "Reason" TEXT,
+                    "CreatedAt" TEXT NOT NULL
+                )
+                """;
+            await checkCmd.ExecuteNonQueryAsync();
+
+            checkCmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
+                    "ProfileId" INTEGER NOT NULL,
+                    "MediaItemId" INTEGER NOT NULL,
+                    "CreatedAt" TEXT NOT NULL
+                )
+                """;
+            await checkCmd.ExecuteNonQueryAsync();
         }
     }
 
