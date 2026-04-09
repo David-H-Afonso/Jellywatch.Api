@@ -205,6 +205,7 @@ public class SeriesController : BaseApiController
         {
             Id = series.Id,
             MediaItemId = series.MediaItemId,
+            TmdbId = series.MediaItem.TmdbId,
             Title = series.MediaItem.Title,
             OriginalTitle = series.MediaItem.OriginalTitle,
             Overview = series.MediaItem.Overview,
@@ -220,6 +221,8 @@ public class SeriesController : BaseApiController
             UserRating = userRating,
             IsBlocked = profileId.HasValue && await _context.ProfileMediaBlocks
                 .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == series.MediaItemId),
+            IsInLibrary = !profileId.HasValue || await _context.ProfileWatchStates
+                .AnyAsync(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == series.MediaItemId),
             Ratings = series.MediaItem.ExternalRatings.Select(r => new ExternalRatingDto
             {
                 Provider = r.Provider,

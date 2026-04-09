@@ -60,11 +60,25 @@ public class TmdbApiClient : ITmdbApiClient
         return response?.Results ?? new List<TmdbMovieSearchResult>();
     }
 
-    public async Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId)
+    public async Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false)
     {
         var cacheKey = $"tv-{tmdbId}";
-        var cached = await GetCachedResponseAsync<TmdbTvDetails>(ExternalProvider.Tmdb, cacheKey);
-        if (cached is not null) return cached;
+
+        if (!forceRefresh)
+        {
+            var cached = await GetCachedResponseAsync<TmdbTvDetails>(ExternalProvider.Tmdb, cacheKey);
+            if (cached is not null) return cached;
+        }
+        else
+        {
+            var stale = _context.ProviderCacheEntries
+                .FirstOrDefault(c => c.Provider == ExternalProvider.Tmdb && c.ExternalId == cacheKey);
+            if (stale is not null)
+            {
+                _context.ProviderCacheEntries.Remove(stale);
+                await _context.SaveChangesAsync();
+            }
+        }
 
         var url = $"{BaseUrl}/tv/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids";
         var result = await SendWithRetryAsync<TmdbTvDetails>(url);
@@ -90,11 +104,25 @@ public class TmdbApiClient : ITmdbApiClient
         return result;
     }
 
-    public async Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId)
+    public async Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId, bool forceRefresh = false)
     {
         var cacheKey = $"movie-{tmdbId}";
-        var cached = await GetCachedResponseAsync<TmdbMovieDetails>(ExternalProvider.Tmdb, cacheKey);
-        if (cached is not null) return cached;
+
+        if (!forceRefresh)
+        {
+            var cached = await GetCachedResponseAsync<TmdbMovieDetails>(ExternalProvider.Tmdb, cacheKey);
+            if (cached is not null) return cached;
+        }
+        else
+        {
+            var stale = _context.ProviderCacheEntries
+                .FirstOrDefault(c => c.Provider == ExternalProvider.Tmdb && c.ExternalId == cacheKey);
+            if (stale is not null)
+            {
+                _context.ProviderCacheEntries.Remove(stale);
+                await _context.SaveChangesAsync();
+            }
+        }
 
         var url = $"{BaseUrl}/movie/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids";
         var result = await SendWithRetryAsync<TmdbMovieDetails>(url);

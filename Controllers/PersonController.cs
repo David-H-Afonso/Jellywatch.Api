@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Domain.Enums;
 using Jellywatch.Api.Infrastructure;
 using Jellywatch.Api.Services.Metadata;
 
@@ -20,7 +19,7 @@ public class PersonController : BaseApiController
     }
 
     [HttpGet("{tmdbPersonId:int}/credits")]
-    public async Task<ActionResult<PersonCreditsDto>> GetPersonCredits(int tmdbPersonId)
+    public async Task<ActionResult<PersonCreditsDto>> GetPersonCredits(int tmdbPersonId, [FromQuery] int? profileId = null)
     {
         if (!_tmdbClient.IsConfigured)
             return Ok(new PersonCreditsDto { TmdbPersonId = tmdbPersonId });
@@ -36,23 +35,53 @@ public class PersonController : BaseApiController
             .Distinct()
             .ToList() ?? [];
 
-        var localMediaMap = await _context.MediaItems
-            .Where(mi => mi.TmdbId.HasValue && tmdbIds.Contains(mi.TmdbId.Value))
-            .Select(mi => new { mi.TmdbId, mi.MediaType, mi.Id })
-            .ToDictionaryAsync(mi => mi.TmdbId!.Value, mi => new { mi.Id, mi.MediaType });
+        // Build series query — optionally scoped to the profile's library
+        var seriesQuery = _context.Series
+            .Where(s => s.MediaItem.TmdbId.HasValue && tmdbIds.Contains(s.MediaItem.TmdbId.Value));
+
+        if (profileId.HasValue)
+        {
+            seriesQuery = seriesQuery.Where(s =>
+                s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value) ||
+                s.Seasons.Any(sea => sea.Episodes.Any(ep =>
+                    ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value))));
+        }
+
+        // Map TMDB id → (series.Id for navigation, MediaItem.Id for poster)
+        var localSeriesMap = await seriesQuery
+            .Select(s => new { TmdbId = s.MediaItem.TmdbId!.Value, SeriesId = s.Id, AssetId = s.MediaItemId })
+            .ToDictionaryAsync(s => s.TmdbId, s => (s.SeriesId, s.AssetId));
+
+        // Build movie query — optionally scoped to the profile's library
+        var movieQuery = _context.Movies
+            .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value));
+
+        if (profileId.HasValue)
+        {
+            movieQuery = movieQuery.Where(m =>
+                m.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+        }
+
+        // Map TMDB id → (movie.Id for navigation, MediaItem.Id for poster)
+        var localMovieMap = await movieQuery
+            .Select(m => new { TmdbId = m.MediaItem.TmdbId!.Value, MovieId = m.Id, AssetId = m.MediaItemId })
+            .ToDictionaryAsync(m => m.TmdbId, m => (m.MovieId, m.AssetId));
 
         var credits = tmdbCredits.Cast?
             .OrderByDescending(c => c.VoteAverage ?? 0)
             .ThenByDescending(c => c.ReleaseDate ?? c.FirstAirDate ?? "")
             .Select(c => new PersonCreditItemDto
             {
-                LocalMediaItemId = localMediaMap.ContainsKey(c.Id)
-                    ? (c.MediaType == "tv" && localMediaMap[c.Id].MediaType == MediaType.Series
-                        ? localMediaMap[c.Id].Id
-                        : c.MediaType == "movie" && localMediaMap[c.Id].MediaType == MediaType.Movie
-                            ? localMediaMap[c.Id].Id
-                            : null)
-                    : null,
+                LocalMediaItemId = c.MediaType == "tv" && localSeriesMap.ContainsKey(c.Id)
+                    ? localSeriesMap[c.Id].SeriesId
+                    : c.MediaType == "movie" && localMovieMap.ContainsKey(c.Id)
+                        ? localMovieMap[c.Id].MovieId
+                        : null,
+                LocalAssetId = c.MediaType == "tv" && localSeriesMap.ContainsKey(c.Id)
+                    ? localSeriesMap[c.Id].AssetId
+                    : c.MediaType == "movie" && localMovieMap.ContainsKey(c.Id)
+                        ? localMovieMap[c.Id].AssetId
+                        : null,
                 TmdbId = c.Id,
                 Title = c.Title ?? c.Name ?? "",
                 PosterPath = c.PosterPath,

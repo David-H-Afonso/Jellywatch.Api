@@ -22,6 +22,7 @@ public class SeriesDetailDto
 {
     public int Id { get; set; }
     public int MediaItemId { get; set; }
+    public int? TmdbId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? OriginalTitle { get; set; }
     public string? Overview { get; set; }
@@ -39,6 +40,7 @@ public class SeriesDetailDto
     public decimal? UserRating { get; set; }
     public TranslationDto? SpanishTranslation { get; set; }
     public bool IsBlocked { get; set; }
+    public bool IsInLibrary { get; set; }
 }
 
 public class MovieListDto
@@ -195,6 +197,7 @@ public class PersonCreditsDto
 public class PersonCreditItemDto
 {
     public int? LocalMediaItemId { get; set; }
+    public int? LocalAssetId { get; set; }
     public int TmdbId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? PosterPath { get; set; }

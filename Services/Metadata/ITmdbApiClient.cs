@@ -6,9 +6,9 @@ public interface ITmdbApiClient
 {
     Task<List<TmdbTvSearchResult>> SearchTvAsync(string query, int? year = null);
     Task<List<TmdbMovieSearchResult>> SearchMovieAsync(string query, int? year = null);
-    Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId);
+    Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false);
     Task<TmdbSeasonDetails?> GetTvSeasonAsync(int tmdbId, int seasonNumber);
-    Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId);
+    Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId, bool forceRefresh = false);
     Task<TmdbImageCollection?> GetImagesAsync(int tmdbId, string mediaType, bool forceRefresh = false);
     Task<TmdbTranslationsResponse?> GetTranslationsAsync(int tmdbId, string mediaType);
     Task<TmdbAggregateCreditsResponse?> GetTvAggregateCreditsAsync(int tmdbId);
