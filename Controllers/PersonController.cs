@@ -35,37 +35,41 @@ public class PersonController : BaseApiController
             .Distinct()
             .ToList() ?? [];
 
-        // Build series query — optionally scoped to the profile's library
-        var seriesQuery = _context.Series
-            .Where(s => s.MediaItem.TmdbId.HasValue && tmdbIds.Contains(s.MediaItem.TmdbId.Value));
-
-        if (profileId.HasValue)
-        {
-            seriesQuery = seriesQuery.Where(s =>
-                s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value) ||
-                s.Seasons.Any(sea => sea.Episodes.Any(ep =>
-                    ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value))));
-        }
-
-        // Map TMDB id → (series.Id for navigation, MediaItem.Id for poster)
-        var localSeriesMap = await seriesQuery
+        // Get ALL series in DB matching these TMDB ids (regardless of profile)
+        var localSeriesMap = await _context.Series
+            .Where(s => s.MediaItem.TmdbId.HasValue && tmdbIds.Contains(s.MediaItem.TmdbId.Value))
             .Select(s => new { TmdbId = s.MediaItem.TmdbId!.Value, SeriesId = s.Id, AssetId = s.MediaItemId })
             .ToDictionaryAsync(s => s.TmdbId, s => (s.SeriesId, s.AssetId));
 
-        // Build movie query — optionally scoped to the profile's library
-        var movieQuery = _context.Movies
-            .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value));
-
+        // Which of those does the current profile have?
+        var profileSeriesTmdbIds = new HashSet<int>();
         if (profileId.HasValue)
         {
-            movieQuery = movieQuery.Where(m =>
-                m.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+            profileSeriesTmdbIds = (await _context.Series
+                .Where(s => s.MediaItem.TmdbId.HasValue && tmdbIds.Contains(s.MediaItem.TmdbId.Value) &&
+                            (s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value) ||
+                             s.Seasons.Any(sea => sea.Episodes.Any(ep =>
+                                 ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value)))))
+                .Select(s => s.MediaItem.TmdbId!.Value)
+                .ToListAsync()).ToHashSet();
         }
 
-        // Map TMDB id → (movie.Id for navigation, MediaItem.Id for poster)
-        var localMovieMap = await movieQuery
+        // Get ALL movies in DB matching these TMDB ids (regardless of profile)
+        var localMovieMap = await _context.Movies
+            .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value))
             .Select(m => new { TmdbId = m.MediaItem.TmdbId!.Value, MovieId = m.Id, AssetId = m.MediaItemId })
             .ToDictionaryAsync(m => m.TmdbId, m => (m.MovieId, m.AssetId));
+
+        // Which of those does the current profile have?
+        var profileMovieTmdbIds = new HashSet<int>();
+        if (profileId.HasValue)
+        {
+            profileMovieTmdbIds = (await _context.Movies
+                .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value) &&
+                            m.WatchStates.Any(ws => ws.ProfileId == profileId.Value))
+                .Select(m => m.MediaItem.TmdbId!.Value)
+                .ToListAsync()).ToHashSet();
+        }
 
         var credits = tmdbCredits.Cast?
             .OrderByDescending(c => c.VoteAverage ?? 0)
@@ -82,6 +86,8 @@ public class PersonController : BaseApiController
                     : c.MediaType == "movie" && localMovieMap.ContainsKey(c.Id)
                         ? localMovieMap[c.Id].AssetId
                         : null,
+                IsInYourLibrary = (c.MediaType == "tv" && profileSeriesTmdbIds.Contains(c.Id)) ||
+                                  (c.MediaType == "movie" && profileMovieTmdbIds.Contains(c.Id)),
                 TmdbId = c.Id,
                 Title = c.Title ?? c.Name ?? "",
                 PosterPath = c.PosterPath,

@@ -198,6 +198,7 @@ public class PersonCreditItemDto
 {
     public int? LocalMediaItemId { get; set; }
     public int? LocalAssetId { get; set; }
+    public bool IsInYourLibrary { get; set; }
     public int TmdbId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? PosterPath { get; set; }
