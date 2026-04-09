@@ -392,14 +392,17 @@ public class ProfileController : BaseApiController
         else if (dto.State == WatchState.Unseen)
         {
             var episodeIds = season.Episodes.Select(ep => ep.Id).ToList();
-            var lastFinishedEvents = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId && e.EpisodeId.HasValue && episodeIds.Contains(e.EpisodeId.Value) && e.EventType == WatchEventType.Finished)
-                .GroupBy(e => e.EpisodeId)
-                .Select(g => g.OrderByDescending(e => e.Timestamp).First())
+            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
+            var manualEvents = await _context.WatchEvents
+                .Where(e => e.ProfileId == profileId
+                    && e.EpisodeId.HasValue
+                    && episodeIds.Contains(e.EpisodeId.Value)
+                    && e.EventType == WatchEventType.Finished
+                    && e.Source == SyncSource.Manual)
                 .ToListAsync();
-            if (lastFinishedEvents.Count > 0)
+            if (manualEvents.Count > 0)
             {
-                _context.WatchEvents.RemoveRange(lastFinishedEvents);
+                _context.WatchEvents.RemoveRange(manualEvents);
                 await _context.SaveChangesAsync();
             }
         }
@@ -467,14 +470,17 @@ public class ProfileController : BaseApiController
         else if (dto.State == WatchState.Unseen)
         {
             var episodeIds = allEpisodes.Select(ep => ep.Id).ToList();
-            var lastFinishedEvents = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId && e.EpisodeId.HasValue && episodeIds.Contains(e.EpisodeId.Value) && e.EventType == WatchEventType.Finished)
-                .GroupBy(e => e.EpisodeId)
-                .Select(g => g.OrderByDescending(e => e.Timestamp).First())
+            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
+            var manualEvents = await _context.WatchEvents
+                .Where(e => e.ProfileId == profileId
+                    && e.EpisodeId.HasValue
+                    && episodeIds.Contains(e.EpisodeId.Value)
+                    && e.EventType == WatchEventType.Finished
+                    && e.Source == SyncSource.Manual)
                 .ToListAsync();
-            if (lastFinishedEvents.Count > 0)
+            if (manualEvents.Count > 0)
             {
-                _context.WatchEvents.RemoveRange(lastFinishedEvents);
+                _context.WatchEvents.RemoveRange(manualEvents);
                 await _context.SaveChangesAsync();
             }
         }

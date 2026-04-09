@@ -261,7 +261,7 @@ public class SeriesController : BaseApiController
                         State = ws?.State ?? WatchState.Unseen,
                         IsManualOverride = ws?.IsManualOverride ?? false,
                         UserRating = ws?.UserRating,
-                        WatchedAt = episodeWatchedAt.GetValueOrDefault(ep.Id)
+                        WatchedAt = (ws?.State == WatchState.Seen || ws?.State == WatchState.WontWatch) ? episodeWatchedAt.GetValueOrDefault(ep.Id) : null
                     };
                 }).ToList()
             }).ToList(),

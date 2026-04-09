@@ -41,16 +41,14 @@ public class PersonController : BaseApiController
             .Select(s => new { TmdbId = s.MediaItem.TmdbId!.Value, SeriesId = s.Id, AssetId = s.MediaItemId })
             .ToDictionaryAsync(s => s.TmdbId, s => (s.SeriesId, s.AssetId));
 
-        // Which of those does the current profile have?
-        var profileSeriesTmdbIds = new HashSet<int>();
+        // Which MediaItemIds does the current profile have?
+        var profileMediaItemIds = new HashSet<int>();
         if (profileId.HasValue)
         {
-            profileSeriesTmdbIds = (await _context.Series
-                .Where(s => s.MediaItem.TmdbId.HasValue && tmdbIds.Contains(s.MediaItem.TmdbId.Value) &&
-                            (s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value) ||
-                             s.Seasons.Any(sea => sea.Episodes.Any(ep =>
-                                 ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value)))))
-                .Select(s => s.MediaItem.TmdbId!.Value)
+            profileMediaItemIds = (await _context.ProfileWatchStates
+                .Where(ws => ws.ProfileId == profileId.Value)
+                .Select(ws => ws.MediaItemId)
+                .Distinct()
                 .ToListAsync()).ToHashSet();
         }
 
@@ -59,17 +57,6 @@ public class PersonController : BaseApiController
             .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value))
             .Select(m => new { TmdbId = m.MediaItem.TmdbId!.Value, MovieId = m.Id, AssetId = m.MediaItemId })
             .ToDictionaryAsync(m => m.TmdbId, m => (m.MovieId, m.AssetId));
-
-        // Which of those does the current profile have?
-        var profileMovieTmdbIds = new HashSet<int>();
-        if (profileId.HasValue)
-        {
-            profileMovieTmdbIds = (await _context.Movies
-                .Where(m => m.MediaItem.TmdbId.HasValue && tmdbIds.Contains(m.MediaItem.TmdbId.Value) &&
-                            m.WatchStates.Any(ws => ws.ProfileId == profileId.Value))
-                .Select(m => m.MediaItem.TmdbId!.Value)
-                .ToListAsync()).ToHashSet();
-        }
 
         var credits = tmdbCredits.Cast?
             .OrderByDescending(c => c.VoteAverage ?? 0)
@@ -86,8 +73,8 @@ public class PersonController : BaseApiController
                     : c.MediaType == "movie" && localMovieMap.ContainsKey(c.Id)
                         ? localMovieMap[c.Id].AssetId
                         : null,
-                IsInYourLibrary = (c.MediaType == "tv" && profileSeriesTmdbIds.Contains(c.Id)) ||
-                                  (c.MediaType == "movie" && profileMovieTmdbIds.Contains(c.Id)),
+                IsInYourLibrary = (c.MediaType == "tv" && localSeriesMap.ContainsKey(c.Id) && profileMediaItemIds.Contains(localSeriesMap[c.Id].AssetId)) ||
+                                  (c.MediaType == "movie" && localMovieMap.ContainsKey(c.Id) && profileMediaItemIds.Contains(localMovieMap[c.Id].AssetId)),
                 TmdbId = c.Id,
                 Title = c.Title ?? c.Name ?? "",
                 PosterPath = c.PosterPath,
