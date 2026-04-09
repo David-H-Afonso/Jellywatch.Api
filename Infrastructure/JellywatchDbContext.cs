@@ -147,16 +147,19 @@ public class JellywatchDbContext : DbContext
             e.Property(x => x.Overview).HasColumnName("overview");
             e.Property(x => x.TmdbId).HasColumnName("tmdb_id");
             e.Property(x => x.ImdbId).HasColumnName("imdb_id");
+            e.Property(x => x.TvdbId).HasColumnName("tvdb_id");
             e.Property(x => x.TvMazeId).HasColumnName("tvmaze_id");
             e.Property(x => x.PosterPath).HasColumnName("poster_path");
             e.Property(x => x.BackdropPath).HasColumnName("backdrop_path");
             e.Property(x => x.ReleaseDate).HasColumnName("release_date");
             e.Property(x => x.Status).HasColumnName("status");
             e.Property(x => x.OriginalLanguage).HasColumnName("original_language");
+            e.Property(x => x.Genres).HasColumnName("genres");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
             e.HasIndex(x => x.TmdbId);
             e.HasIndex(x => x.ImdbId);
+            e.HasIndex(x => x.TvdbId);
             e.HasIndex(x => x.TvMazeId);
         });
 
@@ -204,6 +207,8 @@ public class JellywatchDbContext : DbContext
             e.Property(x => x.StillPath).HasColumnName("still_path");
             e.Property(x => x.TmdbId).HasColumnName("tmdb_id");
             e.Property(x => x.AirDate).HasColumnName("air_date");
+            e.Property(x => x.AirTime).HasColumnName("air_time");
+            e.Property(x => x.AirTimeUtc).HasColumnName("air_time_utc");
             e.Property(x => x.Runtime).HasColumnName("runtime");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at");

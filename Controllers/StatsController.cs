@@ -46,6 +46,7 @@ public class StatsController : BaseApiController
                 MovieReleaseDate = e.Movie != null ? e.MediaItem.ReleaseDate : null,
                 Network = e.MediaItem.Series != null ? e.MediaItem.Series.Network : null,
                 MediaItemReleaseDate = e.MediaItem.ReleaseDate,
+                Genres = e.MediaItem.Genres,
             })
             .ToListAsync();
 
@@ -161,7 +162,7 @@ public class StatsController : BaseApiController
         // Most active month
         var mostActive = monthlyActivity.OrderByDescending(m => m.EpisodeCount + m.MovieCount).First();
 
-        // Top series (by episodes watched)
+        // Top series (by user rating, then TMDB rating, then episodes watched)
         var topSeries = episodeEvents
             .GroupBy(e => new { e.MediaItemId, e.MediaTitle })
             .Select(g => new TopSeriesDto
@@ -173,7 +174,10 @@ public class StatsController : BaseApiController
                 UserRating = seriesRatingMap.GetValueOrDefault(g.Key.MediaItemId),
                 TmdbRating = tmdbRatingMap.GetValueOrDefault(g.Key.MediaItemId),
             })
-            .OrderByDescending(s => s.EpisodesWatched)
+            .OrderByDescending(s => s.UserRating.HasValue ? 1 : 0)
+            .ThenByDescending(s => s.UserRating ?? 0)
+            .ThenByDescending(s => s.TmdbRating ?? 0)
+            .ThenByDescending(s => s.EpisodesWatched)
             .Take(10)
             .ToList();
 
@@ -250,6 +254,48 @@ public class StatsController : BaseApiController
         }
         if (activeDates.Count <= 1) longestStreak = activeDates.Count;
 
+        // Genre breakdown
+        var genreData = finishedEvents
+            .Where(e => !string.IsNullOrWhiteSpace(e.Genres))
+            .SelectMany(e => e.Genres!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(g => new { Genre = g, e.MediaType, e.MediaItemId, e.MediaTitle, e.EpisodeRuntime, e.MovieRuntime }))
+            .ToList();
+
+        var genreBreakdown = genreData
+            .GroupBy(g => g.Genre)
+            .Select(g => new GenreBreakdownDto
+            {
+                Genre = g.Key,
+                SeriesCount = g.Where(x => x.MediaType == MediaType.Series).Count(),
+                MovieCount = g.Where(x => x.MediaType == MediaType.Movie).Count(),
+                TotalCount = g.Count(),
+                MinutesWatched = g.Sum(x => x.EpisodeRuntime ?? x.MovieRuntime ?? 0),
+                Titles = g.Select(x => x.MediaTitle).Distinct().Take(10).ToList(),
+            })
+            .OrderByDescending(g => g.TotalCount)
+            .ToList();
+
+        // Monthly genre insights
+        var monthlyGenreInsights = finishedEvents
+            .Where(e => !string.IsNullOrWhiteSpace(e.Genres))
+            .SelectMany(e => e.Genres!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(g => new { Genre = g, Month = e.Timestamp.Month }))
+            .GroupBy(x => x.Month)
+            .Select(monthGroup =>
+            {
+                var topGenre = monthGroup.GroupBy(x => x.Genre)
+                    .OrderByDescending(g => g.Count())
+                    .First();
+                return new MonthlyGenreInsightDto
+                {
+                    Month = monthGroup.Key,
+                    TopGenre = topGenre.Key,
+                    Count = topGenre.Count(),
+                };
+            })
+            .OrderBy(m => m.Month)
+            .ToList();
+
         return Ok(new WrappedDto
         {
             Year = targetYear,
@@ -268,6 +314,8 @@ public class StatsController : BaseApiController
             MostActiveMonth = mostActive.Month.ToString(),
             MostActiveMonthCount = mostActive.EpisodeCount + mostActive.MovieCount,
             TopNetworks = topNetworks,
+            GenreBreakdown = genreBreakdown,
+            MonthlyGenreInsights = monthlyGenreInsights,
         });
     }
 
@@ -358,17 +406,35 @@ public class StatsController : BaseApiController
                 && !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId && b.MediaItemId == ep.Season.Series.MediaItemId))
             .OrderBy(ep => ep.AirDate)
             .ThenBy(ep => ep.Season.Series.MediaItem.Title)
+            .ThenBy(ep => ep.Season.SeasonNumber)
+            .ThenBy(ep => ep.EpisodeNumber)
             .Select(ep => new UpcomingEpisodeDto
             {
                 MediaItemId = ep.Season.Series.MediaItemId,
+                SeriesId = ep.Season.SeriesId,
                 SeriesTitle = ep.Season.Series.MediaItem.Title,
                 SeasonNumber = ep.Season.SeasonNumber,
                 EpisodeNumber = ep.EpisodeNumber,
                 EpisodeName = ep.Name,
                 AirDate = ep.AirDate!,
+                AirTime = ep.AirTime,
+                AirTimeUtc = ep.AirTimeUtc,
             })
-            .Take(50)
             .ToListAsync();
+
+        // For batch-drop releases (multiple episodes same series same day), only keep the first
+        upcoming = upcoming
+            .GroupBy(ep => (ep.MediaItemId, ep.AirDate))
+            .Select(g =>
+            {
+                var first = g.First();
+                first.BatchCount = g.Count();
+                return first;
+            })
+            .OrderBy(ep => ep.AirDate)
+            .ThenBy(ep => ep.SeriesTitle)
+            .Take(50)
+            .ToList();
 
         return Ok(upcoming);
     }

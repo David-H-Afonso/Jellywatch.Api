@@ -12,6 +12,22 @@ namespace Jellywatch.Api.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
+                name: "BlacklistedItems",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    JellyfinItemId = table.Column<string>(type: "TEXT", nullable: false),
+                    DisplayName = table.Column<string>(type: "TEXT", nullable: true),
+                    Reason = table.Column<string>(type: "TEXT", nullable: true),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_BlacklistedItems", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "import_queue_item",
                 columns: table => new
                 {
@@ -42,12 +58,14 @@ namespace Jellywatch.Api.Migrations
                     overview = table.Column<string>(type: "TEXT", nullable: true),
                     tmdb_id = table.Column<int>(type: "INTEGER", nullable: true),
                     imdb_id = table.Column<string>(type: "TEXT", nullable: true),
+                    tvdb_id = table.Column<int>(type: "INTEGER", nullable: true),
                     tvmaze_id = table.Column<int>(type: "INTEGER", nullable: true),
                     poster_path = table.Column<string>(type: "TEXT", nullable: true),
                     backdrop_path = table.Column<string>(type: "TEXT", nullable: true),
                     release_date = table.Column<string>(type: "TEXT", nullable: true),
                     status = table.Column<string>(type: "TEXT", nullable: true),
                     original_language = table.Column<string>(type: "TEXT", nullable: true),
+                    genres = table.Column<string>(type: "TEXT", nullable: true),
                     created_at = table.Column<DateTime>(type: "TEXT", nullable: false),
                     updated_at = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
@@ -289,6 +307,7 @@ namespace Jellywatch.Api.Migrations
                     tmdb_id = table.Column<int>(type: "INTEGER", nullable: true),
                     episode_count = table.Column<int>(type: "INTEGER", nullable: true),
                     air_date = table.Column<string>(type: "TEXT", nullable: true),
+                    TmdbRating = table.Column<double>(type: "REAL", nullable: true),
                     created_at = table.Column<DateTime>(type: "TEXT", nullable: false),
                     updated_at = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
@@ -299,6 +318,33 @@ namespace Jellywatch.Api.Migrations
                         name: "FK_season_series_series_id",
                         column: x => x.series_id,
                         principalTable: "series",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ProfileMediaBlocks",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    ProfileId = table.Column<int>(type: "INTEGER", nullable: false),
+                    MediaItemId = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ProfileMediaBlocks", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ProfileMediaBlocks_media_item_MediaItemId",
+                        column: x => x.MediaItemId,
+                        principalTable: "media_item",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_ProfileMediaBlocks_profile_ProfileId",
+                        column: x => x.ProfileId,
+                        principalTable: "profile",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -369,7 +415,10 @@ namespace Jellywatch.Api.Migrations
                     still_path = table.Column<string>(type: "TEXT", nullable: true),
                     tmdb_id = table.Column<int>(type: "INTEGER", nullable: true),
                     air_date = table.Column<string>(type: "TEXT", nullable: true),
+                    air_time = table.Column<string>(type: "TEXT", nullable: true),
+                    air_time_utc = table.Column<string>(type: "TEXT", nullable: true),
                     runtime = table.Column<int>(type: "INTEGER", nullable: true),
+                    TmdbRating = table.Column<double>(type: "REAL", nullable: true),
                     created_at = table.Column<DateTime>(type: "TEXT", nullable: false),
                     updated_at = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
@@ -398,6 +447,7 @@ namespace Jellywatch.Api.Migrations
                     local_path = table.Column<string>(type: "TEXT", nullable: true),
                     width = table.Column<int>(type: "INTEGER", nullable: true),
                     height = table.Column<int>(type: "INTEGER", nullable: true),
+                    language = table.Column<string>(type: "TEXT", nullable: true),
                     created_at = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
@@ -475,9 +525,11 @@ namespace Jellywatch.Api.Migrations
                     profile_id = table.Column<int>(type: "INTEGER", nullable: false),
                     media_item_id = table.Column<int>(type: "INTEGER", nullable: false),
                     episode_id = table.Column<int>(type: "INTEGER", nullable: true),
+                    season_id = table.Column<int>(type: "INTEGER", nullable: true),
                     movie_id = table.Column<int>(type: "INTEGER", nullable: true),
                     state = table.Column<int>(type: "INTEGER", nullable: false),
                     is_manual_override = table.Column<bool>(type: "INTEGER", nullable: false),
+                    user_rating = table.Column<decimal>(type: "decimal(4,2)", nullable: true),
                     last_updated = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
@@ -507,6 +559,12 @@ namespace Jellywatch.Api.Migrations
                         principalTable: "profile",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_profile_watch_state_season_season_id",
+                        column: x => x.season_id,
+                        principalTable: "season",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.SetNull);
                 });
 
             migrationBuilder.CreateTable(
@@ -523,7 +581,8 @@ namespace Jellywatch.Api.Migrations
                     event_type = table.Column<int>(type: "INTEGER", nullable: false),
                     position_ticks = table.Column<long>(type: "INTEGER", nullable: true),
                     source = table.Column<int>(type: "INTEGER", nullable: false),
-                    timestamp = table.Column<DateTime>(type: "TEXT", nullable: false)
+                    timestamp = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -612,6 +671,11 @@ namespace Jellywatch.Api.Migrations
                 column: "tmdb_id");
 
             migrationBuilder.CreateIndex(
+                name: "IX_media_item_tvdb_id",
+                table: "media_item",
+                column: "tvdb_id");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_media_item_tvmaze_id",
                 table: "media_item",
                 column: "tvmaze_id");
@@ -681,10 +745,25 @@ namespace Jellywatch.Api.Migrations
                 column: "movie_id");
 
             migrationBuilder.CreateIndex(
-                name: "IX_profile_watch_state_profile_id_media_item_id_episode_id_movie_id",
+                name: "IX_profile_watch_state_profile_id_media_item_id_episode_id_season_id_movie_id",
                 table: "profile_watch_state",
-                columns: new[] { "profile_id", "media_item_id", "episode_id", "movie_id" },
+                columns: new[] { "profile_id", "media_item_id", "episode_id", "season_id", "movie_id" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_profile_watch_state_season_id",
+                table: "profile_watch_state",
+                column: "season_id");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ProfileMediaBlocks_MediaItemId",
+                table: "ProfileMediaBlocks",
+                column: "MediaItemId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ProfileMediaBlocks_ProfileId",
+                table: "ProfileMediaBlocks",
+                column: "ProfileId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_propagation_rule_source_profile_id_target_profile_id",
@@ -771,6 +850,9 @@ namespace Jellywatch.Api.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
+                name: "BlacklistedItems");
+
+            migrationBuilder.DropTable(
                 name: "external_rating");
 
             migrationBuilder.DropTable(
@@ -793,6 +875,9 @@ namespace Jellywatch.Api.Migrations
 
             migrationBuilder.DropTable(
                 name: "profile_watch_state");
+
+            migrationBuilder.DropTable(
+                name: "ProfileMediaBlocks");
 
             migrationBuilder.DropTable(
                 name: "propagation_rule");

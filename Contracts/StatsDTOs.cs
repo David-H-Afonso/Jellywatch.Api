@@ -18,6 +18,25 @@ public class WrappedDto
     public string? MostActiveMonth { get; set; }
     public int MostActiveMonthCount { get; set; }
     public List<TopNetworkDto> TopNetworks { get; set; } = new();
+    public List<GenreBreakdownDto> GenreBreakdown { get; set; } = new();
+    public List<MonthlyGenreInsightDto> MonthlyGenreInsights { get; set; } = new();
+}
+
+public class GenreBreakdownDto
+{
+    public string Genre { get; set; } = string.Empty;
+    public int SeriesCount { get; set; }
+    public int MovieCount { get; set; }
+    public int TotalCount { get; set; }
+    public int MinutesWatched { get; set; }
+    public List<string> Titles { get; set; } = new();
+}
+
+public class MonthlyGenreInsightDto
+{
+    public int Month { get; set; }
+    public string TopGenre { get; set; } = string.Empty;
+    public int Count { get; set; }
 }
 
 public class MonthlyActivityDto
@@ -114,9 +133,13 @@ public class CalendarEventDto
 public class UpcomingEpisodeDto
 {
     public int MediaItemId { get; set; }
+    public int SeriesId { get; set; }
     public string SeriesTitle { get; set; } = string.Empty;
     public int SeasonNumber { get; set; }
     public int EpisodeNumber { get; set; }
     public string? EpisodeName { get; set; }
     public string AirDate { get; set; } = string.Empty;
+    public string? AirTime { get; set; }
+    public string? AirTimeUtc { get; set; }
+    public int BatchCount { get; set; } = 1;
 }

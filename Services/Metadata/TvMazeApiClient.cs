@@ -40,6 +40,18 @@ public class TvMazeApiClient : ITvMazeApiClient
         return await SendWithRateLimitAsync<TvMazeShow>(url);
     }
 
+    public async Task<TvMazeShow?> LookupByImdbAsync(string imdbId)
+    {
+        var url = $"{BaseUrl}/lookup/shows?imdb={Uri.EscapeDataString(imdbId)}";
+        return await SendWithRateLimitAsync<TvMazeShow>(url);
+    }
+
+    public async Task<TvMazeShow?> LookupByTvdbAsync(int tvdbId)
+    {
+        var url = $"{BaseUrl}/lookup/shows?thetvdb={tvdbId}";
+        return await SendWithRateLimitAsync<TvMazeShow>(url);
+    }
+
     public async Task<List<TvMazeEpisode>> GetEpisodesAsync(int tvMazeId)
     {
         var url = $"{BaseUrl}/shows/{tvMazeId}/episodes";

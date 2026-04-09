@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Jellywatch.Api.Migrations
 {
     [DbContext(typeof(JellywatchDbContext))]
-    [Migration("20260407082759_AddUserRating")]
-    partial class AddUserRating
+    [Migration("20260409132911_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -55,6 +55,14 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("air_date");
 
+                    b.Property<string>("AirTime")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("air_time");
+
+                    b.Property<string>("AirTimeUtc")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("air_time_utc");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
@@ -86,6 +94,9 @@ namespace Jellywatch.Api.Migrations
                     b.Property<int?>("TmdbId")
                         .HasColumnType("INTEGER")
                         .HasColumnName("tmdb_id");
+
+                    b.Property<double?>("TmdbRating")
+                        .HasColumnType("REAL");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT")
@@ -298,6 +309,10 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("Genres")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("genres");
+
                     b.Property<string>("ImdbId")
                         .HasColumnType("TEXT")
                         .HasColumnName("imdb_id");
@@ -343,6 +358,10 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("tvmaze_id");
 
+                    b.Property<int?>("TvdbId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("tvdb_id");
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("updated_at");
@@ -354,6 +373,8 @@ namespace Jellywatch.Api.Migrations
                     b.HasIndex("TmdbId");
 
                     b.HasIndex("TvMazeId");
+
+                    b.HasIndex("TvdbId");
 
                     b.ToTable("media_item", (string)null);
                 });
@@ -502,6 +523,30 @@ namespace Jellywatch.Api.Migrations
                     b.ToTable("profile", (string)null);
                 });
 
+            modelBuilder.Entity("Jellywatch.Api.Domain.ProfileMediaBlock", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("MediaItemId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ProfileId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MediaItemId");
+
+                    b.HasIndex("ProfileId");
+
+                    b.ToTable("ProfileMediaBlocks");
+                });
+
             modelBuilder.Entity("Jellywatch.Api.Domain.ProfileNote", b =>
                 {
                     b.Property<int>("Id")
@@ -583,6 +628,10 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("profile_id");
 
+                    b.Property<int?>("SeasonId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("season_id");
+
                     b.Property<int>("State")
                         .HasColumnType("INTEGER")
                         .HasColumnName("state");
@@ -599,7 +648,9 @@ namespace Jellywatch.Api.Migrations
 
                     b.HasIndex("MovieId");
 
-                    b.HasIndex("ProfileId", "MediaItemId", "EpisodeId", "MovieId")
+                    b.HasIndex("SeasonId");
+
+                    b.HasIndex("ProfileId", "MediaItemId", "EpisodeId", "SeasonId", "MovieId")
                         .IsUnique();
 
                     b.ToTable("profile_watch_state", (string)null);
@@ -718,6 +769,9 @@ namespace Jellywatch.Api.Migrations
                     b.Property<int?>("TmdbId")
                         .HasColumnType("INTEGER")
                         .HasColumnName("tmdb_id");
+
+                    b.Property<double?>("TmdbRating")
+                        .HasColumnType("REAL");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT")
@@ -869,6 +923,9 @@ namespace Jellywatch.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
                         .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
 
                     b.Property<int?>("EpisodeId")
                         .HasColumnType("INTEGER")
@@ -1059,6 +1116,25 @@ namespace Jellywatch.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Jellywatch.Api.Domain.ProfileMediaBlock", b =>
+                {
+                    b.HasOne("Jellywatch.Api.Domain.MediaItem", "MediaItem")
+                        .WithMany()
+                        .HasForeignKey("MediaItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Jellywatch.Api.Domain.Profile", "Profile")
+                        .WithMany()
+                        .HasForeignKey("ProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("MediaItem");
+
+                    b.Navigation("Profile");
+                });
+
             modelBuilder.Entity("Jellywatch.Api.Domain.ProfileNote", b =>
                 {
                     b.HasOne("Jellywatch.Api.Domain.Episode", "Episode")
@@ -1116,6 +1192,11 @@ namespace Jellywatch.Api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Jellywatch.Api.Domain.Season", "Season")
+                        .WithMany()
+                        .HasForeignKey("SeasonId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Episode");
 
                     b.Navigation("MediaItem");
@@ -1123,6 +1204,8 @@ namespace Jellywatch.Api.Migrations
                     b.Navigation("Movie");
 
                     b.Navigation("Profile");
+
+                    b.Navigation("Season");
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.PropagationRule", b =>

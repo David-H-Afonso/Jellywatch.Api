@@ -11,12 +11,14 @@ public class MediaItem
     public string? Overview { get; set; }
     public int? TmdbId { get; set; }
     public string? ImdbId { get; set; }
+    public int? TvdbId { get; set; }
     public int? TvMazeId { get; set; }
     public string? PosterPath { get; set; }
     public string? BackdropPath { get; set; }
     public string? ReleaseDate { get; set; }
     public string? Status { get; set; }
     public string? OriginalLanguage { get; set; }
+    public string? Genres { get; set; }  // Comma-separated genre list from TMDB
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

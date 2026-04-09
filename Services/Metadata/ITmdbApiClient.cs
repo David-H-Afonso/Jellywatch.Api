@@ -11,5 +11,9 @@ public interface ITmdbApiClient
     Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId);
     Task<TmdbImageCollection?> GetImagesAsync(int tmdbId, string mediaType, bool forceRefresh = false);
     Task<TmdbTranslationsResponse?> GetTranslationsAsync(int tmdbId, string mediaType);
+    Task<TmdbAggregateCreditsResponse?> GetTvAggregateCreditsAsync(int tmdbId);
+    Task<TmdbCreditsResponse?> GetMovieCreditsAsync(int tmdbId);
+    Task<TmdbPersonCreditsResponse?> GetPersonCombinedCreditsAsync(int personId);
+    Task<TmdbPersonDetails?> GetPersonDetailsAsync(int personId);
     bool IsConfigured { get; }
 }

@@ -225,6 +225,9 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         series.TotalEpisodes = tvDetails.NumberOfEpisodes;
         await _context.SaveChangesAsync();
 
+        // Enrich episodes with air times from TVMaze (TMDB only provides date, not time)
+        await EnrichEpisodesWithAirTimesAsync(series);
+
         _logger.LogInformation("Populated seasons/episodes for series {SeriesId} ({Name}): {Seasons} seasons, {Episodes} episodes",
             seriesId, series.MediaItem.Title, tvDetails.NumberOfSeasons, tvDetails.NumberOfEpisodes);
     }
@@ -432,8 +435,12 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     mediaItem.ReleaseDate = details.FirstAirDate ?? mediaItem.ReleaseDate;
                     mediaItem.Status = details.Status ?? mediaItem.Status;
                     mediaItem.OriginalLanguage = details.OriginalLanguage ?? mediaItem.OriginalLanguage;
+                    if (details.Genres is { Count: > 0 })
+                        mediaItem.Genres = string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name));
                     if (mediaItem.ImdbId is null && details.ExternalIds?.ImdbId is not null)
                         mediaItem.ImdbId = details.ExternalIds.ImdbId;
+                    if (mediaItem.TvdbId is null && details.ExternalIds?.TvdbId is not null)
+                        mediaItem.TvdbId = details.ExternalIds.TvdbId;
 
                     await _context.SaveChangesAsync();
 
@@ -461,6 +468,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     mediaItem.ReleaseDate = details.ReleaseDate ?? mediaItem.ReleaseDate;
                     mediaItem.Status = details.Status ?? mediaItem.Status;
                     mediaItem.OriginalLanguage = details.OriginalLanguage ?? mediaItem.OriginalLanguage;
+                    if (details.Genres is { Count: > 0 })
+                        mediaItem.Genres = string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name));
                     var effectiveImdb = details.ImdbId ?? details.ExternalIds?.ImdbId;
                     if (effectiveImdb is not null) mediaItem.ImdbId = effectiveImdb;
                     await _context.SaveChangesAsync();
@@ -530,11 +539,15 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             Overview = details.Overview,
             TmdbId = details.Id,
             ImdbId = details.ExternalIds?.ImdbId,
+            TvdbId = details.ExternalIds?.TvdbId,
             PosterPath = details.PosterPath,
             BackdropPath = details.BackdropPath,
             ReleaseDate = details.FirstAirDate,
             Status = details.Status,
-            OriginalLanguage = details.OriginalLanguage
+            OriginalLanguage = details.OriginalLanguage,
+            Genres = details.Genres is { Count: > 0 }
+                ? string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name))
+                : null
         };
 
         _context.MediaItems.Add(mediaItem);
@@ -613,6 +626,123 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         return mediaItem;
     }
 
+    private async Task EnrichEpisodesWithAirTimesAsync(Series series)
+    {
+        // Resolve TvMazeId from IMDB ID if not set
+        if (!series.MediaItem.TvMazeId.HasValue && !string.IsNullOrWhiteSpace(series.MediaItem.ImdbId))
+        {
+            try
+            {
+                var tvMazeShow = await _tvMazeClient.LookupByImdbAsync(series.MediaItem.ImdbId);
+                if (tvMazeShow is not null)
+                {
+                    series.MediaItem.TvMazeId = tvMazeShow.Id;
+                    await _context.SaveChangesAsync();
+                    _logger.LogInformation("Resolved TvMazeId {TvMazeId} for series '{Title}' via IMDB {ImdbId}",
+                        tvMazeShow.Id, series.MediaItem.Title, series.MediaItem.ImdbId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not resolve TvMazeId from IMDB for series '{Title}'", series.MediaItem.Title);
+            }
+        }
+
+        // Fallback: resolve TvMazeId from TVDB ID if IMDB lookup failed
+        if (!series.MediaItem.TvMazeId.HasValue && series.MediaItem.TvdbId.HasValue)
+        {
+            try
+            {
+                var tvMazeShow = await _tvMazeClient.LookupByTvdbAsync(series.MediaItem.TvdbId.Value);
+                if (tvMazeShow is not null)
+                {
+                    series.MediaItem.TvMazeId = tvMazeShow.Id;
+                    await _context.SaveChangesAsync();
+                    _logger.LogInformation("Resolved TvMazeId {TvMazeId} for series '{Title}' via TVDB {TvdbId}",
+                        tvMazeShow.Id, series.MediaItem.Title, series.MediaItem.TvdbId.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not resolve TvMazeId from TVDB for series '{Title}'", series.MediaItem.Title);
+            }
+        }
+
+        if (!series.MediaItem.TvMazeId.HasValue) return;
+
+        try
+        {
+            // Fetch episodes and show info in parallel
+            var episodesTask = _tvMazeClient.GetEpisodesAsync(series.MediaItem.TvMazeId.Value);
+            var showTask = _tvMazeClient.GetShowAsync(series.MediaItem.TvMazeId.Value);
+            await Task.WhenAll(episodesTask, showTask);
+            var tvMazeEpisodes = episodesTask.Result;
+            var tvMazeShow = showTask.Result;
+
+            if (tvMazeEpisodes.Count == 0) return;
+
+            // Extract schedule time + timezone so we can synthesize UTC for episodes that lack airstamp
+            var scheduleTime = tvMazeShow?.Schedule?.Time; // e.g. "22:00"
+            var timezone = tvMazeShow?.Network?.Country?.Timezone
+                        ?? tvMazeShow?.WebChannel?.Country?.Timezone; // e.g. "Europe/Madrid"
+            TimeZoneInfo? tzInfo = null;
+            if (timezone is not null)
+            {
+                try { tzInfo = TimeZoneInfo.FindSystemTimeZoneById(timezone); }
+                catch { /* unknown timezone — skip synthesis */ }
+            }
+
+            // Build lookup: include all episodes that have at least an airdate
+            var lookup = tvMazeEpisodes
+                .Where(e => e.Number.HasValue && (!string.IsNullOrEmpty(e.Airdate) || !string.IsNullOrEmpty(e.Airstamp)))
+                .ToDictionary(e => (e.Season, e.Number!.Value), e => e);
+
+            var updated = false;
+            foreach (var season in series.Seasons)
+            {
+                foreach (var episode in season.Episodes)
+                {
+                    if (!lookup.TryGetValue((season.SeasonNumber, episode.EpisodeNumber), out var tvData))
+                        continue;
+
+                    // Update local airtime if present
+                    if (!string.IsNullOrEmpty(tvData.Airtime) && episode.AirTime != tvData.Airtime)
+                    {
+                        episode.AirTime = tvData.Airtime;
+                        updated = true;
+                    }
+
+                    // Prefer explicit airstamp; synthesize from schedule+timezone if missing
+                    string? utcStamp = tvData.Airstamp;
+                    if (string.IsNullOrEmpty(utcStamp) && !string.IsNullOrEmpty(tvData.Airdate) && tzInfo is not null && !string.IsNullOrEmpty(scheduleTime))
+                    {
+                        try
+                        {
+                            var localDt = DateTime.ParseExact($"{tvData.Airdate}T{scheduleTime}", "yyyy-MM-ddTHH:mm",
+                                System.Globalization.CultureInfo.InvariantCulture);
+                            var utcDt = TimeZoneInfo.ConvertTimeToUtc(localDt, tzInfo);
+                            utcStamp = utcDt.ToString("yyyy-MM-ddTHH:mm:sszzz");
+                        }
+                        catch { /* malformed date — skip */ }
+                    }
+
+                    if (!string.IsNullOrEmpty(utcStamp) && episode.AirTimeUtc != utcStamp)
+                    {
+                        episode.AirTimeUtc = utcStamp;
+                        updated = true;
+                    }
+                }
+            }
+
+            if (updated)
+                await _context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not enrich air times from TVMaze for series {SeriesId}", series.Id);
+        }
+    }
+
     private async Task PopulateSeasonsFromTvMazeAsync(Series series)
     {
         if (!series.MediaItem.TvMazeId.HasValue) return;
@@ -656,6 +786,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                         Overview = StripHtmlTags(tvMazeEp.Summary),
                         StillPath = tvMazeEp.Image?.Original,
                         AirDate = tvMazeEp.Airdate,
+                        AirTime = tvMazeEp.Airtime,
                         Runtime = tvMazeEp.Runtime
                     });
                 }
@@ -665,6 +796,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     existingEp.Overview = StripHtmlTags(tvMazeEp.Summary);
                     existingEp.StillPath = tvMazeEp.Image?.Original;
                     existingEp.AirDate = tvMazeEp.Airdate;
+                    existingEp.AirTime = tvMazeEp.Airtime;
                     existingEp.Runtime = tvMazeEp.Runtime;
                 }
             }
@@ -724,7 +856,10 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             BackdropPath = details.BackdropPath,
             ReleaseDate = details.ReleaseDate,
             Status = details.Status,
-            OriginalLanguage = details.OriginalLanguage
+            OriginalLanguage = details.OriginalLanguage,
+            Genres = details.Genres is { Count: > 0 }
+                ? string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name))
+                : null
         };
 
         _context.MediaItems.Add(mediaItem);

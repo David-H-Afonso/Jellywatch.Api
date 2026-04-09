@@ -52,6 +52,14 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("air_date");
 
+                    b.Property<string>("AirTime")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("air_time");
+
+                    b.Property<string>("AirTimeUtc")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("air_time_utc");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
@@ -298,6 +306,10 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("Genres")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("genres");
+
                     b.Property<string>("ImdbId")
                         .HasColumnType("TEXT")
                         .HasColumnName("imdb_id");
@@ -343,6 +355,10 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("tvmaze_id");
 
+                    b.Property<int?>("TvdbId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("tvdb_id");
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("updated_at");
@@ -354,6 +370,8 @@ namespace Jellywatch.Api.Migrations
                     b.HasIndex("TmdbId");
 
                     b.HasIndex("TvMazeId");
+
+                    b.HasIndex("TvdbId");
 
                     b.ToTable("media_item", (string)null);
                 });

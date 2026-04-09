@@ -15,6 +15,7 @@ public class SeriesListDto
     public WatchState AggregateState { get; set; }
     public string? ReleaseDate { get; set; }
     public decimal? UserRating { get; set; }
+    public double? TmdbRating { get; set; }
 }
 
 public class SeriesDetailDto
@@ -34,6 +35,7 @@ public class SeriesDetailDto
     public int? TotalEpisodes { get; set; }
     public List<ExternalRatingDto> Ratings { get; set; } = new();
     public List<SeasonDto> Seasons { get; set; } = new();
+    public string? Genres { get; set; }
     public decimal? UserRating { get; set; }
     public TranslationDto? SpanishTranslation { get; set; }
     public bool IsBlocked { get; set; }
@@ -49,6 +51,7 @@ public class MovieListDto
     public WatchState State { get; set; }
     public string? ReleaseDate { get; set; }
     public decimal? UserRating { get; set; }
+    public double? TmdbRating { get; set; }
 }
 
 public class MovieDetailDto
@@ -63,6 +66,7 @@ public class MovieDetailDto
     public string? ReleaseDate { get; set; }
     public string? OriginalLanguage { get; set; }
     public int? Runtime { get; set; }
+    public string? Genres { get; set; }
     public WatchState State { get; set; }
     public decimal? UserRating { get; set; }
     public List<ExternalRatingDto> Ratings { get; set; } = new();
@@ -169,4 +173,33 @@ public class AdminProfileBlockDto
     public string? SpanishTitle { get; set; }
     public MediaType MediaType { get; set; }
     public DateTime BlockedAt { get; set; }
+}
+
+public class CastMemberDto
+{
+    public int TmdbPersonId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Character { get; set; }
+    public string? ProfilePath { get; set; }
+    public int? TotalEpisodeCount { get; set; }
+}
+
+public class PersonCreditsDto
+{
+    public int TmdbPersonId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? ProfilePath { get; set; }
+    public List<PersonCreditItemDto> Credits { get; set; } = [];
+}
+
+public class PersonCreditItemDto
+{
+    public int? LocalMediaItemId { get; set; }
+    public int TmdbId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? PosterPath { get; set; }
+    public string? Character { get; set; }
+    public string MediaType { get; set; } = string.Empty;
+    public string? ReleaseDate { get; set; }
+    public double? VoteAverage { get; set; }
 }

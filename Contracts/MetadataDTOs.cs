@@ -134,6 +134,9 @@ public class TmdbTvDetails
 
     [JsonPropertyName("external_ids")]
     public TmdbExternalIds? ExternalIds { get; set; }
+
+    [JsonPropertyName("genres")]
+    public List<TmdbGenre>? Genres { get; set; }
 }
 
 public class TmdbMovieDetails
@@ -179,6 +182,9 @@ public class TmdbMovieDetails
 
     [JsonPropertyName("external_ids")]
     public TmdbExternalIds? ExternalIds { get; set; }
+
+    [JsonPropertyName("genres")]
+    public List<TmdbGenre>? Genres { get; set; }
 }
 
 public class TmdbSeasonSummary
@@ -260,6 +266,15 @@ public class TmdbEpisodeDetails
 
     [JsonPropertyName("vote_average")]
     public double VoteAverage { get; set; }
+}
+
+public class TmdbGenre
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
 }
 
 public class TmdbNetwork
@@ -414,6 +429,12 @@ public class TvMazeShow
 
     [JsonPropertyName("network")]
     public TvMazeNetwork? Network { get; set; }
+
+    [JsonPropertyName("webChannel")]
+    public TvMazeNetwork? WebChannel { get; set; }
+
+    [JsonPropertyName("schedule")]
+    public TvMazeSchedule? Schedule { get; set; }
 }
 
 public class TvMazeImage
@@ -441,6 +462,21 @@ public class TvMazeNetwork
 {
     [JsonPropertyName("name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("country")]
+    public TvMazeCountry? Country { get; set; }
+}
+
+public class TvMazeCountry
+{
+    [JsonPropertyName("timezone")]
+    public string? Timezone { get; set; }
+}
+
+public class TvMazeSchedule
+{
+    [JsonPropertyName("time")]
+    public string? Time { get; set; }
 }
 
 public class TvMazeEpisode
@@ -459,6 +495,12 @@ public class TvMazeEpisode
 
     [JsonPropertyName("airdate")]
     public string? Airdate { get; set; }
+
+    [JsonPropertyName("airtime")]
+    public string? Airtime { get; set; }
+
+    [JsonPropertyName("airstamp")]
+    public string? Airstamp { get; set; }
 
     [JsonPropertyName("runtime")]
     public int? Runtime { get; set; }
@@ -538,4 +580,122 @@ public class PosterOptionDto
 public class SelectPosterDto
 {
     public string RemoteUrl { get; set; } = string.Empty;
+}
+
+// --- TMDB Credits DTOs ---
+
+public class TmdbCreditsResponse
+{
+    [JsonPropertyName("cast")]
+    public List<TmdbCastMember>? Cast { get; set; }
+}
+
+public class TmdbCastMember
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("character")]
+    public string? Character { get; set; }
+
+    [JsonPropertyName("profile_path")]
+    public string? ProfilePath { get; set; }
+
+    [JsonPropertyName("order")]
+    public int Order { get; set; }
+}
+
+public class TmdbAggregateCreditsResponse
+{
+    [JsonPropertyName("cast")]
+    public List<TmdbAggregateCastMember>? Cast { get; set; }
+}
+
+public class TmdbAggregateCastMember
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("profile_path")]
+    public string? ProfilePath { get; set; }
+
+    [JsonPropertyName("order")]
+    public int Order { get; set; }
+
+    [JsonPropertyName("roles")]
+    public List<TmdbRole>? Roles { get; set; }
+
+    [JsonPropertyName("total_episode_count")]
+    public int TotalEpisodeCount { get; set; }
+}
+
+public class TmdbRole
+{
+    [JsonPropertyName("character")]
+    public string? Character { get; set; }
+
+    [JsonPropertyName("episode_count")]
+    public int EpisodeCount { get; set; }
+}
+
+// --- Person DTOs ---
+
+public class TmdbPersonCreditsResponse
+{
+    [JsonPropertyName("cast")]
+    public List<TmdbPersonCastCredit>? Cast { get; set; }
+}
+
+public class TmdbPersonCastCredit
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("media_type")]
+    public string? MediaType { get; set; }
+
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("poster_path")]
+    public string? PosterPath { get; set; }
+
+    [JsonPropertyName("character")]
+    public string? Character { get; set; }
+
+    [JsonPropertyName("first_air_date")]
+    public string? FirstAirDate { get; set; }
+
+    [JsonPropertyName("release_date")]
+    public string? ReleaseDate { get; set; }
+
+    [JsonPropertyName("vote_average")]
+    public double? VoteAverage { get; set; }
+}
+
+public class TmdbPersonDetails
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("profile_path")]
+    public string? ProfilePath { get; set; }
+
+    [JsonPropertyName("biography")]
+    public string? Biography { get; set; }
+
+    [JsonPropertyName("known_for_department")]
+    public string? KnownForDepartment { get; set; }
 }

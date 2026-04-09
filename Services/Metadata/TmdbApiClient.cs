@@ -150,6 +150,66 @@ public class TmdbApiClient : ITmdbApiClient
         return result;
     }
 
+    public async Task<TmdbAggregateCreditsResponse?> GetTvAggregateCreditsAsync(int tmdbId)
+    {
+        var cacheKey = $"tv-{tmdbId}-aggregate-credits";
+        var cached = await GetCachedResponseAsync<TmdbAggregateCreditsResponse>(ExternalProvider.Tmdb, cacheKey);
+        if (cached is not null) return cached;
+
+        var url = $"{BaseUrl}/tv/{tmdbId}/aggregate_credits?language={_settings.PrimaryLanguage}";
+        var result = await SendWithRetryAsync<TmdbAggregateCreditsResponse>(url);
+
+        if (result is not null)
+            await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
+
+        return result;
+    }
+
+    public async Task<TmdbCreditsResponse?> GetMovieCreditsAsync(int tmdbId)
+    {
+        var cacheKey = $"movie-{tmdbId}-credits";
+        var cached = await GetCachedResponseAsync<TmdbCreditsResponse>(ExternalProvider.Tmdb, cacheKey);
+        if (cached is not null) return cached;
+
+        var url = $"{BaseUrl}/movie/{tmdbId}/credits?language={_settings.PrimaryLanguage}";
+        var result = await SendWithRetryAsync<TmdbCreditsResponse>(url);
+
+        if (result is not null)
+            await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
+
+        return result;
+    }
+
+    public async Task<TmdbPersonCreditsResponse?> GetPersonCombinedCreditsAsync(int personId)
+    {
+        var cacheKey = $"person-{personId}-combined-credits";
+        var cached = await GetCachedResponseAsync<TmdbPersonCreditsResponse>(ExternalProvider.Tmdb, cacheKey);
+        if (cached is not null) return cached;
+
+        var url = $"{BaseUrl}/person/{personId}/combined_credits?language={_settings.PrimaryLanguage}";
+        var result = await SendWithRetryAsync<TmdbPersonCreditsResponse>(url);
+
+        if (result is not null)
+            await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
+
+        return result;
+    }
+
+    public async Task<TmdbPersonDetails?> GetPersonDetailsAsync(int personId)
+    {
+        var cacheKey = $"person-{personId}-details";
+        var cached = await GetCachedResponseAsync<TmdbPersonDetails>(ExternalProvider.Tmdb, cacheKey);
+        if (cached is not null) return cached;
+
+        var url = $"{BaseUrl}/person/{personId}?language={_settings.PrimaryLanguage}";
+        var result = await SendWithRetryAsync<TmdbPersonDetails>(url);
+
+        if (result is not null)
+            await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
+
+        return result;
+    }
+
     private async Task<T?> SendWithRetryAsync<T>(string url) where T : class
     {
         if (!IsConfigured)

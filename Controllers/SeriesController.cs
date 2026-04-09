@@ -5,6 +5,7 @@ using Jellywatch.Api.Domain;
 using Jellywatch.Api.Domain.Enums;
 using Jellywatch.Api.Helpers;
 using Jellywatch.Api.Infrastructure;
+using Jellywatch.Api.Services.Metadata;
 
 namespace Jellywatch.Api.Controllers;
 
@@ -12,10 +13,12 @@ namespace Jellywatch.Api.Controllers;
 public class SeriesController : BaseApiController
 {
     private readonly JellywatchDbContext _context;
+    private readonly ITmdbApiClient _tmdbClient;
 
-    public SeriesController(JellywatchDbContext context)
+    public SeriesController(JellywatchDbContext context, ITmdbApiClient tmdbClient)
     {
         _context = context;
+        _tmdbClient = tmdbClient;
     }
 
     [HttpGet]
@@ -80,7 +83,11 @@ public class SeriesController : BaseApiController
             UserRating = profileId.HasValue
                 ? s.MediaItem.WatchStates.Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId == null && ws.MovieId == null)
                     .Select(ws => ws.UserRating).FirstOrDefault()
-                : null
+                : null,
+            TmdbRating = s.MediaItem.ExternalRatings
+                .Where(er => er.Provider == ExternalProvider.Tmdb)
+                .Select(er => er.Score != null ? (double?)Convert.ToDouble(er.Score) : null)
+                .FirstOrDefault()
         });
 
         // State filter
@@ -89,20 +96,52 @@ public class SeriesController : BaseApiController
             projected = projected.Where(s => s.AggregateState == stateFilter);
         }
 
-        // Sorting
-        projected = query.SortBy?.ToLower() switch
-        {
-            "title" => query.SortDescending ? projected.OrderByDescending(s => s.Title) : projected.OrderBy(s => s.Title),
-            "release" => query.SortDescending ? projected.OrderByDescending(s => s.ReleaseDate) : projected.OrderBy(s => s.ReleaseDate),
-            "grade" => query.SortDescending ? projected.OrderByDescending(s => s.UserRating) : projected.OrderBy(s => s.UserRating),
-            _ => projected.OrderBy(s => s.Title)
-        };
+        int totalCount;
+        List<SeriesListDto> data;
 
-        var totalCount = await projected.CountAsync();
-        var data = await projected
-            .Skip(query.Skip)
-            .Take(query.Take)
-            .ToListAsync();
+        var sortKey = query.SortBy?.ToLower();
+        if (sortKey == "top" || sortKey == "grade")
+        {
+            var allData = await projected.ToListAsync();
+            totalCount = allData.Count;
+            IEnumerable<SeriesListDto> sorted = sortKey switch
+            {
+                "top" => query.SortDescending
+                    ? allData
+                        .OrderBy(s => s.UserRating.HasValue ? 0 : s.TmdbRating.HasValue ? 1 : 2)
+                        .ThenByDescending(s => s.UserRating ?? 0)
+                        .ThenByDescending(s => s.TmdbRating ?? 0)
+                        .ThenByDescending(s => s.ReleaseDate)
+                    : allData
+                        .OrderByDescending(s => s.UserRating.HasValue ? 0 : s.TmdbRating.HasValue ? 1 : 2)
+                        .ThenBy(s => s.UserRating ?? 0)
+                        .ThenBy(s => s.TmdbRating ?? 0)
+                        .ThenBy(s => s.ReleaseDate),
+                _ => query.SortDescending // grade
+                    ? allData
+                        .OrderBy(s => s.UserRating.HasValue ? 0 : 1)
+                        .ThenByDescending(s => s.UserRating ?? 0)
+                    : allData
+                        .OrderByDescending(s => s.UserRating.HasValue ? 0 : 1)
+                        .ThenBy(s => s.UserRating ?? 0),
+            };
+            data = sorted.Skip(query.Skip).Take(query.Take).ToList();
+        }
+        else
+        {
+            projected = query.SortBy?.ToLower() switch
+            {
+                "title" => query.SortDescending ? projected.OrderByDescending(s => s.Title) : projected.OrderBy(s => s.Title),
+                "release" => query.SortDescending ? projected.OrderByDescending(s => s.ReleaseDate) : projected.OrderBy(s => s.ReleaseDate),
+                _ => projected.OrderBy(s => s.Title)
+            };
+
+            totalCount = await projected.CountAsync();
+            data = await projected
+                .Skip(query.Skip)
+                .Take(query.Take)
+                .ToListAsync();
+        }
 
         return Ok(new PagedResult<SeriesListDto>
         {
@@ -177,6 +216,7 @@ public class SeriesController : BaseApiController
             Network = series.Network,
             TotalSeasons = series.TotalSeasons,
             TotalEpisodes = series.TotalEpisodes,
+            Genres = series.MediaItem.Genres,
             UserRating = userRating,
             IsBlocked = profileId.HasValue && await _context.ProfileMediaBlocks
                 .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == series.MediaItemId),
@@ -440,5 +480,38 @@ public class SeriesController : BaseApiController
 
         await _context.SaveChangesAsync();
         return Ok(new { userRating = dto.Rating });
+    }
+
+    [HttpGet("{id:int}/credits")]
+    public async Task<ActionResult<List<CastMemberDto>>> GetSeriesCredits(int id)
+    {
+        var series = await _context.Series
+            .Include(s => s.MediaItem)
+            .FirstOrDefaultAsync(s => s.Id == id);
+
+        if (series is null)
+            return NotFound(new { message = "Series not found" });
+
+        if (!series.MediaItem.TmdbId.HasValue || !_tmdbClient.IsConfigured)
+            return Ok(new List<CastMemberDto>());
+
+        var credits = await _tmdbClient.GetTvAggregateCreditsAsync(series.MediaItem.TmdbId.Value);
+        if (credits?.Cast is null)
+            return Ok(new List<CastMemberDto>());
+
+        var cast = credits.Cast
+            .OrderBy(c => c.Order)
+            .Take(20)
+            .Select(c => new CastMemberDto
+            {
+                TmdbPersonId = c.Id,
+                Name = c.Name ?? "",
+                Character = c.Roles?.OrderByDescending(r => r.EpisodeCount).FirstOrDefault()?.Character,
+                ProfilePath = c.ProfilePath,
+                TotalEpisodeCount = c.TotalEpisodeCount,
+            })
+            .ToList();
+
+        return Ok(cast);
     }
 }

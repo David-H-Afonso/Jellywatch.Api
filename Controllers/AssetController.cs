@@ -28,6 +28,9 @@ public class AssetController : BaseApiController
     [AllowAnonymous]
     public async Task<IActionResult> GetImage(int mediaItemId, string imageType)
     {
+        // Normalize to lowercase so file-system lookups are case-consistent on Linux
+        imageType = imageType.ToLowerInvariant();
+
         // Try local cache first
         var localPath = await _assetService.GetLocalPathAsync(mediaItemId, imageType);
         if (localPath is not null && System.IO.File.Exists(localPath))
@@ -46,7 +49,8 @@ public class AssetController : BaseApiController
                 && i.ImageType == imageTypeEnum
                 && i.SeasonId == null && i.EpisodeId == null
                 && i.RemoteUrl != null)
-            .OrderBy(i => i.Language == "en" ? 0 : i.Language == "es" ? 1 : 2)
+            .OrderByDescending(i => i.LocalPath != null) // Prefer previously selected image
+            .ThenBy(i => i.Language == "en" ? 0 : i.Language == "es" ? 1 : 2)
             .ThenBy(i => i.Id)
             .FirstOrDefaultAsync();
 

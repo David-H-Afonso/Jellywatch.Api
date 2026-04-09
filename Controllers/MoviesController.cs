@@ -4,6 +4,7 @@ using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain.Enums;
 using Jellywatch.Api.Helpers;
 using Jellywatch.Api.Infrastructure;
+using Jellywatch.Api.Services.Metadata;
 
 namespace Jellywatch.Api.Controllers;
 
@@ -11,10 +12,12 @@ namespace Jellywatch.Api.Controllers;
 public class MoviesController : BaseApiController
 {
     private readonly JellywatchDbContext _context;
+    private readonly ITmdbApiClient _tmdbClient;
 
-    public MoviesController(JellywatchDbContext context)
+    public MoviesController(JellywatchDbContext context, ITmdbApiClient tmdbClient)
     {
         _context = context;
+        _tmdbClient = tmdbClient;
     }
 
     [HttpGet]
@@ -60,7 +63,11 @@ public class MoviesController : BaseApiController
             UserRating = profileId.HasValue
                 ? m.WatchStates.Where(ws => ws.ProfileId == profileId.Value && ws.MovieId == m.Id)
                     .Select(ws => ws.UserRating).FirstOrDefault()
-                : null
+                : null,
+            TmdbRating = m.MediaItem.ExternalRatings
+                .Where(er => er.Provider == ExternalProvider.Tmdb)
+                .Select(er => er.Score != null ? (double?)Convert.ToDouble(er.Score) : null)
+                .FirstOrDefault()
         });
 
         if (!string.IsNullOrWhiteSpace(query.State) && Enum.TryParse<WatchState>(query.State, true, out var stateFilter))
@@ -68,19 +75,52 @@ public class MoviesController : BaseApiController
             projected = projected.Where(m => m.State == stateFilter);
         }
 
-        projected = query.SortBy?.ToLower() switch
-        {
-            "title" => query.SortDescending ? projected.OrderByDescending(m => m.Title) : projected.OrderBy(m => m.Title),
-            "release" => query.SortDescending ? projected.OrderByDescending(m => m.ReleaseDate) : projected.OrderBy(m => m.ReleaseDate),
-            "grade" => query.SortDescending ? projected.OrderByDescending(m => m.UserRating) : projected.OrderBy(m => m.UserRating),
-            _ => projected.OrderBy(m => m.Title)
-        };
+        int totalCount;
+        List<MovieListDto> data;
 
-        var totalCount = await projected.CountAsync();
-        var data = await projected
-            .Skip(query.Skip)
-            .Take(query.Take)
-            .ToListAsync();
+        var sortKey = query.SortBy?.ToLower();
+        if (sortKey == "top" || sortKey == "grade")
+        {
+            var allData = await projected.ToListAsync();
+            totalCount = allData.Count;
+            IEnumerable<MovieListDto> sorted = sortKey switch
+            {
+                "top" => query.SortDescending
+                    ? allData
+                        .OrderBy(m => m.UserRating.HasValue ? 0 : m.TmdbRating.HasValue ? 1 : 2)
+                        .ThenByDescending(m => m.UserRating ?? 0)
+                        .ThenByDescending(m => m.TmdbRating ?? 0)
+                        .ThenByDescending(m => m.ReleaseDate)
+                    : allData
+                        .OrderByDescending(m => m.UserRating.HasValue ? 0 : m.TmdbRating.HasValue ? 1 : 2)
+                        .ThenBy(m => m.UserRating ?? 0)
+                        .ThenBy(m => m.TmdbRating ?? 0)
+                        .ThenBy(m => m.ReleaseDate),
+                _ => query.SortDescending // grade
+                    ? allData
+                        .OrderBy(m => m.UserRating.HasValue ? 0 : 1)
+                        .ThenByDescending(m => m.UserRating ?? 0)
+                    : allData
+                        .OrderByDescending(m => m.UserRating.HasValue ? 0 : 1)
+                        .ThenBy(m => m.UserRating ?? 0),
+            };
+            data = sorted.Skip(query.Skip).Take(query.Take).ToList();
+        }
+        else
+        {
+            projected = query.SortBy?.ToLower() switch
+            {
+                "title" => query.SortDescending ? projected.OrderByDescending(m => m.Title) : projected.OrderBy(m => m.Title),
+                "release" => query.SortDescending ? projected.OrderByDescending(m => m.ReleaseDate) : projected.OrderBy(m => m.ReleaseDate),
+                _ => projected.OrderBy(m => m.Title)
+            };
+
+            totalCount = await projected.CountAsync();
+            data = await projected
+                .Skip(query.Skip)
+                .Take(query.Take)
+                .ToListAsync();
+        }
 
         return Ok(new PagedResult<MovieListDto>
         {
@@ -139,6 +179,7 @@ public class MoviesController : BaseApiController
             ReleaseDate = movie.MediaItem.ReleaseDate,
             OriginalLanguage = movie.MediaItem.OriginalLanguage,
             Runtime = movie.Runtime,
+            Genres = movie.MediaItem.Genres,
             State = watchState,
             UserRating = userRating,
             WatchedAt = watchedAt,
@@ -192,5 +233,37 @@ public class MoviesController : BaseApiController
 
         await _context.SaveChangesAsync();
         return Ok(new { userRating = dto.Rating });
+    }
+
+    [HttpGet("{id:int}/credits")]
+    public async Task<ActionResult<List<CastMemberDto>>> GetMovieCredits(int id)
+    {
+        var movie = await _context.Movies
+            .Include(m => m.MediaItem)
+            .FirstOrDefaultAsync(m => m.Id == id);
+
+        if (movie is null)
+            return NotFound(new { message = "Movie not found" });
+
+        if (!movie.MediaItem.TmdbId.HasValue || !_tmdbClient.IsConfigured)
+            return Ok(new List<CastMemberDto>());
+
+        var credits = await _tmdbClient.GetMovieCreditsAsync(movie.MediaItem.TmdbId.Value);
+        if (credits?.Cast is null)
+            return Ok(new List<CastMemberDto>());
+
+        var cast = credits.Cast
+            .OrderBy(c => c.Order)
+            .Take(20)
+            .Select(c => new CastMemberDto
+            {
+                TmdbPersonId = c.Id,
+                Name = c.Name ?? "",
+                Character = c.Character,
+                ProfilePath = c.ProfilePath,
+            })
+            .ToList();
+
+        return Ok(cast);
     }
 }

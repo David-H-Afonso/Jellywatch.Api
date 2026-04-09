@@ -10,6 +10,8 @@ public class Episode
     public string? StillPath { get; set; }
     public int? TmdbId { get; set; }
     public string? AirDate { get; set; }
+    public string? AirTime { get; set; }
+    public string? AirTimeUtc { get; set; }
     public int? Runtime { get; set; }
     public double? TmdbRating { get; set; }
     public DateTime CreatedAt { get; set; }

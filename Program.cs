@@ -287,6 +287,49 @@ app.UseMiddleware<ErrorHandlingMiddleware>();
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<JellywatchDbContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+
+    var conn = context.Database.GetDbConnection();
+    await conn.OpenAsync();
+
+    // Check if we are upgrading from pre-squash migrations (old individual migration IDs present)
+    using (var checkCmd = conn.CreateCommand())
+    {
+        checkCmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'";
+        var historyExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
+
+        if (historyExists)
+        {
+            checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
+            var oldCount = (long)(await checkCmd.ExecuteScalarAsync())!;
+
+            if (oldCount > 0)
+            {
+                logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
+
+                // Wipe old entries and mark the squashed migration as already applied
+                checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory";
+                await checkCmd.ExecuteNonQueryAsync();
+
+                checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
+                await checkCmd.ExecuteNonQueryAsync();
+
+                // Apply any genuinely new columns not covered by old migrations
+                // tvdb_id on media_item (new in this version)
+                try
+                {
+                    checkCmd.CommandText = "ALTER TABLE media_item ADD COLUMN tvdb_id INTEGER";
+                    await checkCmd.ExecuteNonQueryAsync();
+                    logger.LogInformation("Added column tvdb_id to media_item");
+                }
+                catch { /* column already exists — safe to ignore */ }
+
+                logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
+            }
+        }
+    }
+
+    await conn.CloseAsync();
     context.Database.Migrate();
 }
 
