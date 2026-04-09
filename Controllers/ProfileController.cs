@@ -257,13 +257,16 @@ public class ProfileController : BaseApiController
         }
         else if (dto.State == WatchState.Unseen)
         {
-            var lastFinished = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId && e.EpisodeId == episodeId && e.EventType == WatchEventType.Finished)
-                .OrderByDescending(e => e.Timestamp)
-                .FirstOrDefaultAsync();
-            if (lastFinished != null)
+            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
+            var manualEvents = await _context.WatchEvents
+                .Where(e => e.ProfileId == profileId
+                    && e.EpisodeId == episodeId
+                    && e.EventType == WatchEventType.Finished
+                    && e.Source == SyncSource.Manual)
+                .ToListAsync();
+            if (manualEvents.Count > 0)
             {
-                _context.WatchEvents.Remove(lastFinished);
+                _context.WatchEvents.RemoveRange(manualEvents);
                 await _context.SaveChangesAsync();
             }
         }
