@@ -332,6 +332,44 @@ public class AdminController : BaseApiController
         });
     }
 
+    // ── Profile delete ────────────────────────────────────────────────────────
+
+    [HttpDelete("profiles/{id:int}")]
+    public async Task<IActionResult> DeleteProfile(int id)
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        var profile = await _context.Profiles.FindAsync(id);
+        if (profile is null) return NotFound(new { message = "Profile not found" });
+
+        // Prevent deleting own primary profile
+        var currentUser = await _context.Users.FindAsync(CurrentUserId);
+        if (currentUser is not null && profile.JellyfinUserId == currentUser.JellyfinUserId && profile.UserId == currentUser.Id)
+            return BadRequest(new { message = "Cannot delete your own primary profile." });
+
+        var watchStates = await _context.ProfileWatchStates.Where(ws => ws.ProfileId == id).ToListAsync();
+        _context.ProfileWatchStates.RemoveRange(watchStates);
+
+        var watchEvents = await _context.WatchEvents.Where(e => e.ProfileId == id).ToListAsync();
+        _context.WatchEvents.RemoveRange(watchEvents);
+
+        var notes = await _context.ProfileNotes.Where(n => n.ProfileId == id).ToListAsync();
+        _context.ProfileNotes.RemoveRange(notes);
+
+        var blocks = await _context.ProfileMediaBlocks.Where(b => b.ProfileId == id).ToListAsync();
+        _context.ProfileMediaBlocks.RemoveRange(blocks);
+
+        var propagationRules = await _context.PropagationRules
+            .Where(r => r.SourceProfileId == id || r.TargetProfileId == id)
+            .ToListAsync();
+        _context.PropagationRules.RemoveRange(propagationRules);
+
+        _context.Profiles.Remove(profile);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = $"Profile \"{profile.DisplayName}\" deleted." });
+    }
+
     // ── Blacklist ─────────────────────────────────────────────────────────────
 
     [HttpGet("blacklist")]

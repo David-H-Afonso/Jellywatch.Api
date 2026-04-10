@@ -79,6 +79,23 @@ public class AuthController : BaseApiController
             user.AvatarUrl = jellyfinResult.AvatarUrl;
             user.JellyfinServerUrl = request.ServerUrl.TrimEnd('/');
             await _context.SaveChangesAsync();
+
+            // Recreate the primary profile if it was deleted
+            var hasPrimaryProfile = user.Profiles.Any(p => p.JellyfinUserId == jellyfinResult.UserId && p.UserId == user.Id);
+            if (!hasPrimaryProfile)
+            {
+                var restoredProfile = new Profile
+                {
+                    UserId = user.Id,
+                    JellyfinUserId = jellyfinResult.UserId,
+                    DisplayName = jellyfinResult.Username,
+                    IsJoint = false
+                };
+                _context.Profiles.Add(restoredProfile);
+                await _context.SaveChangesAsync();
+
+                user = await _context.Users.Include(u => u.Profiles).FirstAsync(u => u.Id == user.Id);
+            }
         }
 
         var token = _authService.GenerateToken(user);
