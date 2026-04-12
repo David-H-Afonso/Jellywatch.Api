@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Jellywatch.Api.Domain;
 using Jellywatch.Api.Domain.Enums;
 
@@ -424,5 +425,27 @@ public class JellywatchDbContext : DbContext
             e.HasOne(x => x.MediaItem).WithMany().HasForeignKey(x => x.MediaItemId).OnDelete(DeleteBehavior.SetNull);
             e.HasIndex(x => x.JellyfinItemId).IsUnique();
         });
+
+        // SQLite stores DateTime as plain text with no timezone info.
+        // Apply a global converter so every DateTime read from the DB is marked
+        // as UTC — System.Text.Json then emits the "Z" suffix, and the browser
+        // correctly converts to local time instead of treating the value as local.
+        var utcConverter = new ValueConverter<DateTime, DateTime>(
+            write => write,
+            read => DateTime.SpecifyKind(read, DateTimeKind.Utc));
+        var utcNullableConverter = new ValueConverter<DateTime?, DateTime?>(
+            write => write,
+            read => read.HasValue ? DateTime.SpecifyKind(read.Value, DateTimeKind.Utc) : null);
+
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.ClrType == typeof(DateTime))
+                    property.SetValueConverter(utcConverter);
+                else if (property.ClrType == typeof(DateTime?))
+                    property.SetValueConverter(utcNullableConverter);
+            }
+        }
     }
 }
