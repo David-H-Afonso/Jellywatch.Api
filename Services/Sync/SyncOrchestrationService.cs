@@ -97,17 +97,20 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 episodeId = episode.Id;
         }
 
-        // Record the watch event (skip if a Finished event already exists)
+        // Record the watch event; for Finished events, update an existing polling-created record
+        // if it exists — polling uses LastPlayedDate (session start), the real-time webhook has
+        // the accurate stop timestamp.
         if (eventType == WatchEventType.Finished)
         {
-            var alreadyExists = await _context.WatchEvents.AnyAsync(e =>
-                e.ProfileId == profileId
-                && e.MediaItemId == mediaItemId.Value
-                && e.EpisodeId == episodeId
-                && e.MovieId == movieId
-                && e.EventType == WatchEventType.Finished);
+            var existingFinished = await _context.WatchEvents
+                .FirstOrDefaultAsync(e =>
+                    e.ProfileId == profileId
+                    && e.MediaItemId == mediaItemId.Value
+                    && e.EpisodeId == episodeId
+                    && e.MovieId == movieId
+                    && e.EventType == WatchEventType.Finished);
 
-            if (!alreadyExists)
+            if (existingFinished == null)
             {
                 _context.WatchEvents.Add(new WatchEvent
                 {
@@ -121,8 +124,14 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                     Source = source,
                     Timestamp = DateTime.UtcNow,
                 });
-                await _context.SaveChangesAsync();
             }
+            else if (existingFinished.Source == SyncSource.Polling)
+            {
+                // Real-time webhook has the accurate stop time; correct the polling timestamp
+                existingFinished.Timestamp = DateTime.UtcNow;
+                existingFinished.Source = source;
+            }
+            await _context.SaveChangesAsync();
         }
         else
         {
@@ -159,35 +168,6 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             .Where(s => s.ProfileId == profileId && s.MediaItemId == mediaItemId.Value && s.EpisodeId == episodeId && s.MovieId == movieId)
             .Select(s => s.State)
             .FirstOrDefaultAsync();
-
-        // When a PlaybackStop event drives the item to Seen, record a Finished event now with
-        // the correct stop timestamp. Jellyfin's LastPlayedDate is set to session-start, so if
-        // polling runs later it would store the wrong time. Recording it here prevents that.
-        if (eventType == WatchEventType.Stopped && newState == WatchState.Seen)
-        {
-            var alreadyFinished = await _context.WatchEvents.AnyAsync(e =>
-                e.ProfileId == profileId
-                && e.MediaItemId == mediaItemId.Value
-                && e.EpisodeId == episodeId
-                && e.MovieId == movieId
-                && e.EventType == WatchEventType.Finished);
-            if (!alreadyFinished)
-            {
-                _context.WatchEvents.Add(new WatchEvent
-                {
-                    ProfileId = profileId,
-                    MediaItemId = mediaItemId.Value,
-                    EpisodeId = episodeId,
-                    MovieId = movieId,
-                    JellyfinItemId = jellyfinItemId,
-                    EventType = WatchEventType.Finished,
-                    PositionTicks = positionTicks,
-                    Source = source,
-                    Timestamp = DateTime.UtcNow,
-                });
-                await _context.SaveChangesAsync();
-            }
-        }
 
         await _propagation.PropagateStateChangeAsync(profileId, mediaItemId.Value, episodeId, movieId, newState);
 
@@ -294,6 +274,31 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         // Track all Jellyfin IDs seen in this sync for reconciliation
         var seenJellyfinSeriesIds = new HashSet<string>();
         var seenJellyfinMovieIds = new HashSet<string>();
+
+        // Fetch Jellyfin's activity log once to get accurate VideoPlaybackStopped times.
+        // Jellyfin's UserData.LastPlayedDate is the session-start time, not the finish time;
+        // the activity log has the real stop timestamp for each item.
+        var stopTimes = new Dictionary<string, DateTime>();
+        try
+        {
+            var activityLog = await _jellyfinClient.GetActivityLogAsync(
+                minDate: DateTime.UtcNow.AddDays(-90), limit: 2000);
+            stopTimes = activityLog
+                .Where(a => a.Type == "VideoPlaybackStopped"
+                         && a.ItemId != null
+                         && a.UserId == profile.JellyfinUserId)
+                .GroupBy(a => a.ItemId!)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(a => a.Date).First().Date);
+            _logger.LogInformation("Activity log fetched for profile {ProfileId}: {Count} stop events",
+                profile.Id, stopTimes.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not fetch activity log for profile {ProfileId} — timestamps will use fallback",
+                profile.Id);
+        }
 
         foreach (var library in mediaLibraries)
         {
@@ -423,34 +428,48 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                         isNewOrChanged = true;
                     }
 
-                    // Record a WatchEvent so the activity feed is populated
-                    if (isNewOrChanged && state == WatchState.Seen)
+                    // Record/correct the Finished WatchEvent for the activity feed.
+                    // Timestamp priority: webhook Stopped event > Jellyfin activity log > LastPlayedDate > UtcNow
+                    if (state == WatchState.Seen)
                     {
-                        var alreadyHasFinished = await _context.WatchEvents.AnyAsync(e =>
-                            e.ProfileId == profile.Id && e.EpisodeId == episode.Id
-                            && e.EventType == WatchEventType.Finished);
-                        if (!alreadyHasFinished)
+                        var stoppedWebhookEvent = await _context.WatchEvents
+                            .Where(e => e.ProfileId == profile.Id
+                                     && e.EpisodeId == episode.Id
+                                     && e.EventType == WatchEventType.Stopped)
+                            .OrderByDescending(e => e.Timestamp)
+                            .FirstOrDefaultAsync();
+                        var activityLogTime = stopTimes.TryGetValue(item.Id, out var aDate) ? aDate : (DateTime?)null;
+                        var bestTimestamp = stoppedWebhookEvent?.Timestamp
+                            ?? activityLogTime
+                            ?? item.UserData?.LastPlayedDate
+                            ?? DateTime.UtcNow;
+
+                        var existingFinished = await _context.WatchEvents
+                            .FirstOrDefaultAsync(e => e.ProfileId == profile.Id
+                                && e.EpisodeId == episode.Id
+                                && e.EventType == WatchEventType.Finished);
+
+                        if (existingFinished == null)
                         {
-                            // Jellyfin's LastPlayedDate is the session start time, not the end.
-                            // Prefer any Stopped webhook event for an accurate finish timestamp.
-                            var stoppedEvent = await _context.WatchEvents
-                                .Where(e => e.ProfileId == profile.Id
-                                         && e.EpisodeId == episode.Id
-                                         && e.EventType == WatchEventType.Stopped)
-                                .OrderByDescending(e => e.Timestamp)
-                                .FirstOrDefaultAsync();
-                            _context.WatchEvents.Add(new WatchEvent
+                            if (isNewOrChanged)
                             {
-                                ProfileId = profile.Id,
-                                MediaItemId = seriesLink.MediaItemId.Value,
-                                EpisodeId = episode.Id,
-                                JellyfinItemId = item.Id,
-                                EventType = WatchEventType.Finished,
-                                Source = SyncSource.Polling,
-                                Timestamp = stoppedEvent?.Timestamp
-                                    ?? item.UserData?.LastPlayedDate
-                                    ?? DateTime.UtcNow,
-                            });
+                                _context.WatchEvents.Add(new WatchEvent
+                                {
+                                    ProfileId = profile.Id,
+                                    MediaItemId = seriesLink.MediaItemId.Value,
+                                    EpisodeId = episode.Id,
+                                    JellyfinItemId = item.Id,
+                                    EventType = WatchEventType.Finished,
+                                    Source = SyncSource.Polling,
+                                    Timestamp = bestTimestamp,
+                                });
+                            }
+                        }
+                        else if (existingFinished.Source == SyncSource.Polling && activityLogTime.HasValue
+                                 && existingFinished.Timestamp != activityLogTime.Value)
+                        {
+                            // Correct the inaccurate polling timestamp with the activity log's real stop time
+                            existingFinished.Timestamp = activityLogTime.Value;
                         }
                     }
 
@@ -554,34 +573,48 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                         isMovieNewOrChanged = true;
                     }
 
-                    // Record a WatchEvent so the activity feed is populated
-                    if (isMovieNewOrChanged && state == WatchState.Seen)
+                    // Record/correct the Finished WatchEvent for the activity feed.
+                    // Timestamp priority: webhook Stopped event > Jellyfin activity log > LastPlayedDate > UtcNow
+                    if (state == WatchState.Seen)
                     {
-                        var alreadyHasFinished = await _context.WatchEvents.AnyAsync(e =>
-                            e.ProfileId == profile.Id && e.MovieId == movie.Id
-                            && e.EventType == WatchEventType.Finished);
-                        if (!alreadyHasFinished)
+                        var stoppedWebhookEvent = await _context.WatchEvents
+                            .Where(e => e.ProfileId == profile.Id
+                                     && e.MovieId == movie.Id
+                                     && e.EventType == WatchEventType.Stopped)
+                            .OrderByDescending(e => e.Timestamp)
+                            .FirstOrDefaultAsync();
+                        var activityLogTime = stopTimes.TryGetValue(item.Id, out var mDate) ? mDate : (DateTime?)null;
+                        var bestTimestamp = stoppedWebhookEvent?.Timestamp
+                            ?? activityLogTime
+                            ?? item.UserData?.LastPlayedDate
+                            ?? DateTime.UtcNow;
+
+                        var existingFinished = await _context.WatchEvents
+                            .FirstOrDefaultAsync(e => e.ProfileId == profile.Id
+                                && e.MovieId == movie.Id
+                                && e.EventType == WatchEventType.Finished);
+
+                        if (existingFinished == null)
                         {
-                            // Jellyfin's LastPlayedDate is the session start time, not the end.
-                            // Prefer any Stopped webhook event for an accurate finish timestamp.
-                            var stoppedEvent = await _context.WatchEvents
-                                .Where(e => e.ProfileId == profile.Id
-                                         && e.MovieId == movie.Id
-                                         && e.EventType == WatchEventType.Stopped)
-                                .OrderByDescending(e => e.Timestamp)
-                                .FirstOrDefaultAsync();
-                            _context.WatchEvents.Add(new WatchEvent
+                            if (isMovieNewOrChanged)
                             {
-                                ProfileId = profile.Id,
-                                MediaItemId = movieLink.MediaItemId.Value,
-                                MovieId = movie.Id,
-                                JellyfinItemId = item.Id,
-                                EventType = WatchEventType.Finished,
-                                Source = SyncSource.Polling,
-                                Timestamp = stoppedEvent?.Timestamp
-                                    ?? item.UserData?.LastPlayedDate
-                                    ?? DateTime.UtcNow,
-                            });
+                                _context.WatchEvents.Add(new WatchEvent
+                                {
+                                    ProfileId = profile.Id,
+                                    MediaItemId = movieLink.MediaItemId.Value,
+                                    MovieId = movie.Id,
+                                    JellyfinItemId = item.Id,
+                                    EventType = WatchEventType.Finished,
+                                    Source = SyncSource.Polling,
+                                    Timestamp = bestTimestamp,
+                                });
+                            }
+                        }
+                        else if (existingFinished.Source == SyncSource.Polling && activityLogTime.HasValue
+                                 && existingFinished.Timestamp != activityLogTime.Value)
+                        {
+                            // Correct the inaccurate polling timestamp with the activity log's real stop time
+                            existingFinished.Timestamp = activityLogTime.Value;
                         }
                     }
 

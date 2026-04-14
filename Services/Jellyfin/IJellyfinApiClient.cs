@@ -18,6 +18,7 @@ public interface IJellyfinApiClient
     Task<JellyfinItemInfo?> GetItemAsync(string itemId, string userId);
     Task<JellyfinItemInfo?> GetItemAsync(string itemId);
     Task<JellyfinUserData?> GetUserDataAsync(string userId, string itemId);
+    Task<List<JellyfinActivityEntry>> GetActivityLogAsync(DateTime? minDate = null, int limit = 2000);
 }
 
 public class JellyfinUserInfo
@@ -61,4 +62,14 @@ public class JellyfinUserData
     public bool IsFavorite { get; set; }
     public double? PlayedPercentage { get; set; }
     public DateTime? LastPlayedDate { get; set; }
+}
+
+public class JellyfinActivityEntry
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
+    public string? ItemId { get; set; }
+    public DateTime Date { get; set; }
+    public string? UserId { get; set; }
 }

@@ -81,16 +81,19 @@ public class PropagationService : IPropagationService
                 _logger.LogInformation("Upgraded state to {State} for profile {TargetId} media {MediaId}", newState, rule.TargetProfileId, mediaItemId);
             }
 
-            // Create a WatchEvent for the target profile with the original timestamp
+            // Create or correct the WatchEvent for the target profile.
+            // If one already exists with a polling-created (inaccurate) timestamp, update it
+            // with the accurate timestamp from the source profile.
             if (newState == WatchState.Seen && timestamp.HasValue)
             {
-                var eventExists = await _context.WatchEvents.AnyAsync(e =>
-                    e.ProfileId == rule.TargetProfileId
-                    && e.MediaItemId == mediaItemId
-                    && e.EpisodeId == episodeId
-                    && e.MovieId == movieId
-                    && e.EventType == WatchEventType.Finished);
-                if (!eventExists)
+                var existingEvent = await _context.WatchEvents
+                    .FirstOrDefaultAsync(e =>
+                        e.ProfileId == rule.TargetProfileId
+                        && e.MediaItemId == mediaItemId
+                        && e.EpisodeId == episodeId
+                        && e.MovieId == movieId
+                        && e.EventType == WatchEventType.Finished);
+                if (existingEvent == null)
                 {
                     _context.WatchEvents.Add(new WatchEvent
                     {
@@ -102,6 +105,13 @@ public class PropagationService : IPropagationService
                         Source = SyncSource.Manual,
                         Timestamp = timestamp.Value,
                     });
+                }
+                else if (existingEvent.Source == SyncSource.Polling
+                         && existingEvent.Timestamp != timestamp.Value)
+                {
+                    // Correct the polling-created inaccurate timestamp
+                    existingEvent.Timestamp = timestamp.Value;
+                    existingEvent.Source = SyncSource.Manual;
                 }
             }
         }

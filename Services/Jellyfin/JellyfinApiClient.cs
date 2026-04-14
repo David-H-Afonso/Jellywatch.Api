@@ -185,6 +185,41 @@ public class JellyfinApiClient : IJellyfinApiClient
         return client;
     }
 
+    public async Task<List<JellyfinActivityEntry>> GetActivityLogAsync(DateTime? minDate = null, int limit = 2000)
+    {
+        var client = CreateAuthenticatedClient();
+        var query = $"/System/ActivityLog/Entries?limit={limit}";
+        if (minDate.HasValue)
+            query += $"&minDate={Uri.EscapeDataString(minDate.Value.ToUniversalTime().ToString("o"))}";
+
+        var response = await client.GetAsync(query);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to fetch Jellyfin activity log: {Status}", response.StatusCode);
+            return [];
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("Items", out var items))
+            return [];
+
+        return items.EnumerateArray()
+            .Select(entry => new JellyfinActivityEntry
+            {
+                Id = entry.TryGetProperty("Id", out var id) ? id.GetInt64() : 0,
+                Name = entry.TryGetProperty("Name", out var name) ? name.GetString() ?? "" : "",
+                Type = entry.TryGetProperty("Type", out var type) ? type.GetString() ?? "" : "",
+                ItemId = entry.TryGetProperty("ItemId", out var itemId) ? itemId.GetString() : null,
+                Date = entry.TryGetProperty("Date", out var date)
+                    ? date.GetDateTimeOffset().UtcDateTime
+                    : DateTime.UtcNow,
+                UserId = entry.TryGetProperty("UserId", out var userId) ? userId.GetString() : null,
+            })
+            .ToList();
+    }
+
     private static JellyfinItemInfo ParseItemInfo(JsonElement item)
     {
         var info = new JellyfinItemInfo
