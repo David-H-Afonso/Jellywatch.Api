@@ -7,5 +7,5 @@ public class JwtSettings
     public string SecretKey { get; set; } = "ThisIsAVerySecureSecretKeyThatShouldBeChangedInProduction123456789";
     public string Issuer { get; set; } = "Jellywatch.Api";
     public string Audience { get; set; } = "Jellywatch.Client";
-    public int ExpirationMinutes { get; set; } = 10080; // 7 days
+    public int ExpirationMinutes { get; set; } = 525600; // 1 year
 }
