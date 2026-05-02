@@ -155,17 +155,27 @@ public class ProfileController : BaseApiController
         var episodeIds = events.Where(e => e.EpisodeId != null).Select(e => e.EpisodeId!.Value).Distinct().ToList();
         var movieIds = events.Where(e => e.MovieId != null).Select(e => e.MovieId!.Value).Distinct().ToList();
 
-        var episodeRatings = episodeIds.Count > 0
-            ? await _context.ProfileWatchStates
+        var episodeRatings = new Dictionary<int, decimal?>();
+        if (episodeIds.Count > 0)
+        {
+            var episodeStates = await _context.ProfileWatchStates
                 .Where(s => s.ProfileId == profileId && s.EpisodeId != null && episodeIds.Contains(s.EpisodeId.Value))
-                .ToDictionaryAsync(s => s.EpisodeId!.Value, s => s.UserRating)
-            : new Dictionary<int, decimal?>();
+                .ToListAsync();
+            episodeRatings = episodeStates
+                .GroupBy(s => s.EpisodeId!.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
+        }
 
-        var movieRatings = movieIds.Count > 0
-            ? await _context.ProfileWatchStates
+        var movieRatings = new Dictionary<int, decimal?>();
+        if (movieIds.Count > 0)
+        {
+            var movieStates = await _context.ProfileWatchStates
                 .Where(s => s.ProfileId == profileId && s.MovieId != null && movieIds.Contains(s.MovieId.Value))
-                .ToDictionaryAsync(s => s.MovieId!.Value, s => s.UserRating)
-            : new Dictionary<int, decimal?>();
+                .ToListAsync();
+            movieRatings = movieStates
+                .GroupBy(s => s.MovieId!.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
+        }
 
         var dtos = events.Select(e =>
         {
