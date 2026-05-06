@@ -125,6 +125,10 @@ builder.Services.AddHostedService<ImportQueueWorker>();
 // Asset caching
 builder.Services.AddScoped<IAssetCacheService, AssetCacheService>();
 
+// Backup schedule background service
+builder.Services.AddSingleton<Jellywatch.Api.Services.BackupScheduleService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Jellywatch.Api.Services.BackupScheduleService>());
+
 builder.Services.AddHttpClient("JellyfinClient")
     .ConfigureHttpClient(client =>
     {
