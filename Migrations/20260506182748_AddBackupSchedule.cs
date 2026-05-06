@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -50,7 +50,8 @@ namespace Jellywatch.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(name: "backup_schedule");
+            migrationBuilder.DropTable(
+                name: "backup_schedule");
         }
     }
 }
