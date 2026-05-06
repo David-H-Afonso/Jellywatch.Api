@@ -41,6 +41,85 @@ namespace Jellywatch.Api.Migrations
                     b.ToTable("BlacklistedItems");
                 });
 
+            modelBuilder.Entity("Jellywatch.Api.Domain.BackupSchedule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<int>("BackupHour")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(3)
+                        .HasColumnName("backup_hour");
+
+                    b.Property<int>("BackupMinute")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0)
+                        .HasColumnName("backup_minute");
+
+                    b.Property<string>("DestinationPath")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("/backups")
+                        .HasColumnName("destination_path");
+
+                    b.Property<string>("FileNamePrefix")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("")
+                        .HasColumnName("file_name_prefix");
+
+                    b.Property<string>("FileNameSuffix")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("")
+                        .HasColumnName("file_name_suffix");
+
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_enabled");
+
+                    b.Property<DateTime?>("LastRunAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("last_run_at");
+
+                    b.Property<string>("LastRunMessage")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("last_run_message");
+
+                    b.Property<string>("LastRunStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("never")
+                        .HasColumnName("last_run_status");
+
+                    b.Property<int>("RetentionCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(7)
+                        .HasColumnName("retention_count");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("backup_schedule", (string)null);
+                });
+
             modelBuilder.Entity("Jellywatch.Api.Domain.Episode", b =>
                 {
                     b.Property<int>("Id")
@@ -1011,6 +1090,17 @@ namespace Jellywatch.Api.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("webhook_event_log", (string)null);
+                });
+
+            modelBuilder.Entity("Jellywatch.Api.Domain.BackupSchedule", b =>
+                {
+                    b.HasOne("Jellywatch.Api.Domain.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.Episode", b =>
