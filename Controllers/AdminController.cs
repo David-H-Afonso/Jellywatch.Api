@@ -50,6 +50,23 @@ public class AdminController : BaseApiController
         return Ok(users);
     }
 
+    [HttpDelete("users/{id:int}")]
+    public async Task<IActionResult> DeleteUser(int id)
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        if (id == CurrentUserId)
+            return BadRequest(new { message = "Cannot delete your own user account." });
+
+        var user = await _context.Users.FindAsync(id);
+        if (user is null) return NotFound(new { message = "User not found" });
+
+        _context.Users.Remove(user);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = $"User \"{user.Username}\" deleted." });
+    }
+
     [HttpGet("profiles")]
     public async Task<ActionResult<List<ProfileDto>>> GetAllProfiles()
     {
@@ -366,6 +383,17 @@ public class AdminController : BaseApiController
 
         _context.Profiles.Remove(profile);
         await _context.SaveChangesAsync();
+
+        // Also delete the linked user if they have one (and it's not the current user)
+        if (profile.UserId.HasValue && profile.UserId.Value != CurrentUserId)
+        {
+            var linkedUser = await _context.Users.FindAsync(profile.UserId.Value);
+            if (linkedUser is not null)
+            {
+                _context.Users.Remove(linkedUser);
+                await _context.SaveChangesAsync();
+            }
+        }
 
         return Ok(new { message = $"Profile \"{profile.DisplayName}\" deleted." });
     }
