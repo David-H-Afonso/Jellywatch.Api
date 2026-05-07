@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Jellywatch.Api.Configuration;
 using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain;
 using Jellywatch.Api.Helpers;
@@ -15,12 +17,14 @@ public class AdminController : BaseApiController
     private readonly JellywatchDbContext _context;
     private readonly IMetadataResolutionService _metadataService;
     private readonly IJellyfinApiClient _jellyfinClient;
+    private readonly JellyfinSettings _jellyfinSettings;
 
-    public AdminController(JellywatchDbContext context, IMetadataResolutionService metadataService, IJellyfinApiClient jellyfinClient)
+    public AdminController(JellywatchDbContext context, IMetadataResolutionService metadataService, IJellyfinApiClient jellyfinClient, IOptions<JellyfinSettings> jellyfinSettings)
     {
         _context = context;
         _metadataService = metadataService;
         _jellyfinClient = jellyfinClient;
+        _jellyfinSettings = jellyfinSettings.Value;
     }
 
     private async Task<bool> IsAdminAsync() =>
@@ -396,6 +400,86 @@ public class AdminController : BaseApiController
         }
 
         return Ok(new { message = $"Profile \"{profile.DisplayName}\" deleted." });
+    }
+
+    // ── Create user for profile ───────────────────────────────────────────────
+
+    [HttpPost("profiles/{id:int}/create-user")]
+    public async Task<IActionResult> CreateUserForProfile(int id)
+    {
+        if (!await IsAdminAsync()) return Forbid();
+
+        var profile = await _context.Profiles.FindAsync(id);
+        if (profile is null) return NotFound(new { message = "Profile not found" });
+
+        if (profile.UserId.HasValue)
+            return Conflict(new { message = "This profile already has a linked user." });
+
+        // Check no user already exists for this JellyfinUserId
+        var existingUser = await _context.Users.FirstOrDefaultAsync(u => u.JellyfinUserId == profile.JellyfinUserId);
+        if (existingUser is not null)
+        {
+            profile.UserId = existingUser.Id;
+            await _context.SaveChangesAsync();
+            return Ok(new UserDto
+            {
+                Id = existingUser.Id,
+                Username = existingUser.Username,
+                JellyfinUserId = existingUser.JellyfinUserId,
+                IsAdmin = existingUser.IsAdmin,
+                AvatarUrl = existingUser.AvatarUrl,
+                PreferredLanguage = existingUser.PreferredLanguage,
+                CreatedAt = existingUser.CreatedAt
+            });
+        }
+
+        // Resolve IsAdmin and AvatarUrl from Jellyfin if possible
+        bool isAdmin = false;
+        string? avatarUrl = null;
+        try
+        {
+            var jellyfinUsers = await _jellyfinClient.GetUsersAsync();
+            var match = jellyfinUsers.FirstOrDefault(u => u.Id == profile.JellyfinUserId);
+            if (match is not null)
+            {
+                isAdmin = match.IsAdministrator;
+            }
+        }
+        catch { /* silently ignore Jellyfin lookup failures */ }
+
+        var serverUrl = _jellyfinSettings.BaseUrl.TrimEnd('/');
+        if (string.IsNullOrEmpty(serverUrl))
+        {
+            // Fall back to any existing user's server URL
+            var anyUser = await _context.Users.FirstOrDefaultAsync(u => u.JellyfinServerUrl != null);
+            serverUrl = anyUser?.JellyfinServerUrl ?? string.Empty;
+        }
+
+        var user = new User
+        {
+            JellyfinUserId = profile.JellyfinUserId,
+            Username = profile.DisplayName,
+            IsAdmin = isAdmin,
+            AvatarUrl = avatarUrl,
+            JellyfinServerUrl = serverUrl
+        };
+
+        _context.Users.Add(user);
+        await _context.SaveChangesAsync();
+
+        profile.UserId = user.Id;
+        await _context.SaveChangesAsync();
+
+        return Ok(new UserDto
+        {
+            Id = user.Id,
+            Username = user.Username,
+            JellyfinUserId = user.JellyfinUserId,
+            IsAdmin = user.IsAdmin,
+            AvatarUrl = user.AvatarUrl,
+            PreferredLanguage = user.PreferredLanguage,
+            CreatedAt = user.CreatedAt
+        });
     }
 
     // ── Blacklist ─────────────────────────────────────────────────────────────
