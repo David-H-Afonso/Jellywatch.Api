@@ -117,7 +117,7 @@ namespace Jellywatch.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("BlacklistedItems");
+                    b.ToTable("BlacklistedItems", (string)null);
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.Episode", b =>
@@ -620,7 +620,7 @@ namespace Jellywatch.Api.Migrations
 
                     b.HasIndex("ProfileId");
 
-                    b.ToTable("ProfileMediaBlocks");
+                    b.ToTable("ProfileMediaBlocks", (string)null);
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.ProfileNote", b =>

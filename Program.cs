@@ -288,94 +288,102 @@ app.UseSwaggerUI(c =>
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
 // Ensure database exists and apply pending migrations
-using (var scope = app.Services.CreateScope())
+try
 {
-    var context = scope.ServiceProvider.GetRequiredService<JellywatchDbContext>();
-    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-
-    var conn = context.Database.GetDbConnection();
-    await conn.OpenAsync();
-
-    // Check if we are upgrading from pre-squash migrations (old individual migration IDs present)
-    using (var checkCmd = conn.CreateCommand())
+    using (var scope = app.Services.CreateScope())
     {
-        checkCmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'";
-        var historyExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
+        var context = scope.ServiceProvider.GetRequiredService<JellywatchDbContext>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
 
-        if (historyExists)
+        var conn = context.Database.GetDbConnection();
+        await conn.OpenAsync();
+
+        // Check if we are upgrading from pre-squash migrations (old individual migration IDs present)
+        using (var checkCmd = conn.CreateCommand())
         {
-            checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
-            var oldCount = (long)(await checkCmd.ExecuteScalarAsync())!;
+            checkCmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'";
+            var historyExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
 
-            if (oldCount > 0)
+            if (historyExists)
             {
-                logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
+                checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
+                var oldCount = (long)(await checkCmd.ExecuteScalarAsync())!;
 
-                // Wipe old entries and mark the squashed migration as already applied
-                checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory";
-                await checkCmd.ExecuteNonQueryAsync();
-
-                checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
-                await checkCmd.ExecuteNonQueryAsync();
-
-                logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
-            }
-
-            // Always run on any existing DB — idempotent column/table additions.
-            // Covers: pre-squash upgrades AND DBs that were already patched but still
-            // missing columns added after the original migrations were created.
-            var newColumns = new (string Table, string Column, string Type)[]
-            {
-                ("media_item", "tvdb_id", "INTEGER"),
-                ("media_item", "original_title", "TEXT"),
-                ("media_item", "imdb_id", "TEXT"),
-                ("media_item", "original_language", "TEXT"),
-                ("media_item", "genres", "TEXT"),
-                ("episode", "air_time", "TEXT"),
-                ("episode", "air_time_utc", "TEXT"),
-                ("episode", "TmdbRating", "REAL"),
-                ("season", "TmdbRating", "REAL"),
-                ("watch_event", "CreatedAt", "TEXT"),
-                ("profile_watch_state", "include_in_dashboard", "INTEGER"),
-                ("profile_watch_state", "exclude_from_dashboard", "INTEGER"),
-            };
-            foreach (var (table, column, colType) in newColumns)
-            {
-                try
+                if (oldCount > 0)
                 {
-                    checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
+                    logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
+
+                    // Wipe old entries and mark the squashed migration as already applied
+                    checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory";
                     await checkCmd.ExecuteNonQueryAsync();
-                    logger.LogInformation("Added column {Column} to {Table}", column, table);
+
+                    checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
+                    await checkCmd.ExecuteNonQueryAsync();
+
+                    logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
                 }
-                catch { /* column already exists — safe to ignore */ }
+
+                // Always run on any existing DB — idempotent column/table additions.
+                // Covers: pre-squash upgrades AND DBs that were already patched but still
+                // missing columns added after the original migrations were created.
+                var newColumns = new (string Table, string Column, string Type)[]
+                {
+                    ("media_item", "tvdb_id", "INTEGER"),
+                    ("media_item", "original_title", "TEXT"),
+                    ("media_item", "imdb_id", "TEXT"),
+                    ("media_item", "original_language", "TEXT"),
+                    ("media_item", "genres", "TEXT"),
+                    ("episode", "air_time", "TEXT"),
+                    ("episode", "air_time_utc", "TEXT"),
+                    ("episode", "TmdbRating", "REAL"),
+                    ("season", "TmdbRating", "REAL"),
+                    ("watch_event", "CreatedAt", "TEXT"),
+                    ("profile_watch_state", "include_in_dashboard", "INTEGER"),
+                    ("profile_watch_state", "exclude_from_dashboard", "INTEGER"),
+                };
+                foreach (var (table, column, colType) in newColumns)
+                {
+                    try
+                    {
+                        checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
+                        await checkCmd.ExecuteNonQueryAsync();
+                        logger.LogInformation("Added column {Column} to {Table}", column, table);
+                    }
+                    catch { /* column already exists — safe to ignore */ }
+                }
+
+                // New tables — create them if absent (safe to run every startup)
+                checkCmd.CommandText = """
+                    CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
+                        "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
+                        "JellyfinItemId" TEXT NOT NULL,
+                        "DisplayName" TEXT,
+                        "Reason" TEXT,
+                        "CreatedAt" TEXT NOT NULL
+                    )
+                    """;
+                await checkCmd.ExecuteNonQueryAsync();
+
+                checkCmd.CommandText = """
+                    CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
+                        "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
+                        "ProfileId" INTEGER NOT NULL,
+                        "MediaItemId" INTEGER NOT NULL,
+                        "CreatedAt" TEXT NOT NULL
+                    )
+                    """;
+                await checkCmd.ExecuteNonQueryAsync();
             }
-
-            // New tables — create them if absent (safe to run every startup)
-            checkCmd.CommandText = """
-                CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
-                    "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
-                    "JellyfinItemId" TEXT NOT NULL,
-                    "DisplayName" TEXT,
-                    "Reason" TEXT,
-                    "CreatedAt" TEXT NOT NULL
-                )
-                """;
-            await checkCmd.ExecuteNonQueryAsync();
-
-            checkCmd.CommandText = """
-                CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
-                    "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
-                    "ProfileId" INTEGER NOT NULL,
-                    "MediaItemId" INTEGER NOT NULL,
-                    "CreatedAt" TEXT NOT NULL
-                )
-                """;
-            await checkCmd.ExecuteNonQueryAsync();
         }
-    }
 
-    await conn.CloseAsync();
-    context.Database.Migrate();
+        await conn.CloseAsync();
+        context.Database.Migrate();
+    }
+}
+catch (Exception ex)
+{
+    var logger = app.Services.CreateScope().ServiceProvider.GetRequiredService<ILogger<Program>>();
+    logger.LogError(ex, "Database initialization failed - API will continue running. Check database path and permissions.");
 }
 
 app.UseCors(builder.Environment.IsDevelopment() ? "AllowAll" : "AllowSpecificOrigins");
