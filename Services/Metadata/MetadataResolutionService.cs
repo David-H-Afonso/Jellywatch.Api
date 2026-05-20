@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain;
@@ -35,13 +36,15 @@ public partial class MetadataResolutionService : IMetadataResolutionService
 
     public async Task<MediaItem?> ResolveSeriesAsync(string jellyfinItemId, string name, int? year = null, int? tmdbId = null, string? imdbId = null)
     {
+        name = string.IsNullOrWhiteSpace(name) ? "Unknown" : name;
+
         // Check if Jellyfin item is already linked
         var existingLink = await _context.JellyfinLibraryItems
             .Include(j => j.MediaItem)
             .FirstOrDefaultAsync(j => j.JellyfinItemId == jellyfinItemId);
 
         if (existingLink?.MediaItem is not null)
-            return existingLink.MediaItem;
+            return await EnsureSeriesRecordAsync(existingLink.MediaItem);
 
         // Strip trailing year like "Countdown (2025)" → cleanName="Countdown", effectiveYear=2025
         var cleanName = name;
@@ -89,12 +92,14 @@ public partial class MetadataResolutionService : IMetadataResolutionService
 
     public async Task<MediaItem?> ResolveMovieAsync(string jellyfinItemId, string name, int? year = null, int? tmdbId = null, string? imdbId = null)
     {
+        name = string.IsNullOrWhiteSpace(name) ? "Unknown" : name;
+
         var existingLink = await _context.JellyfinLibraryItems
             .Include(j => j.MediaItem)
             .FirstOrDefaultAsync(j => j.JellyfinItemId == jellyfinItemId);
 
         if (existingLink?.MediaItem is not null)
-            return existingLink.MediaItem;
+            return await EnsureMovieRecordAsync(existingLink.MediaItem);
 
         MediaItem? mediaItem = null;
 
@@ -298,7 +303,38 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             }
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+        {
+            var added = _context.ChangeTracker.Entries<MediaTranslation>()
+                .Where(e => e.State == EntityState.Added && e.Entity.MediaItemId == mediaItemId)
+                .ToList();
+
+            foreach (var entry in added)
+                entry.State = EntityState.Detached;
+
+            var languages = added.Select(e => e.Entity.Language).Distinct().ToList();
+            var existingTranslations = await _context.MediaTranslations
+                .Where(t => t.MediaItemId == mediaItemId && languages.Contains(t.Language))
+                .ToListAsync();
+
+            foreach (var entry in added)
+            {
+                var existing = existingTranslations.FirstOrDefault(t => t.Language == entry.Entity.Language);
+                if (existing is null)
+                    _context.MediaTranslations.Add(entry.Entity);
+                else
+                {
+                    existing.Title = entry.Entity.Title;
+                    existing.Overview = entry.Entity.Overview;
+                }
+            }
+
+            await _context.SaveChangesAsync();
+        }
     }
 
     public async Task RefreshImagesAsync(int mediaItemId)
@@ -500,7 +536,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             .Include(m => m.Series)
             .FirstOrDefaultAsync(m => m.TmdbId == tmdbId && m.MediaType == MediaType.Series);
 
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return await EnsureSeriesRecordAsync(existing, details: null);
 
         var details = await _tmdbClient.GetTvDetailsAsync(tmdbId);
         if (details is null) return null;
@@ -520,7 +557,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             .Include(m => m.Series)
             .FirstOrDefaultAsync(m => m.TmdbId == best.Id && m.MediaType == MediaType.Series);
 
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return await EnsureSeriesRecordAsync(existing, details: null);
 
         // Get full details
         var details = await _tmdbClient.GetTvDetailsAsync(best.Id);
@@ -549,6 +587,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                 ? string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name))
                 : null
         };
+
+        await using var transaction = await _context.Database.BeginTransactionAsync();
 
         _context.MediaItems.Add(mediaItem);
         await _context.SaveChangesAsync();
@@ -579,6 +619,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         }
 
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         _logger.LogInformation("Created series from TMDB: {Name} (TMDB: {TmdbId})", details.Name, details.Id);
         return mediaItem;
@@ -595,7 +636,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         var existing = await _context.MediaItems
             .FirstOrDefaultAsync(m => m.TvMazeId == show.Id && m.MediaType == MediaType.Series);
 
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return await EnsureSeriesRecordAsync(existing, network: show.Network?.Name);
 
         var mediaItem = new MediaItem
         {
@@ -610,6 +652,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             OriginalLanguage = show.Language
         };
 
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+
         _context.MediaItems.Add(mediaItem);
         await _context.SaveChangesAsync();
 
@@ -621,6 +665,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
 
         _context.Series.Add(series);
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         _logger.LogInformation("Created series from TVmaze: {Name} (TVmaze: {TvMazeId})", show.Name, show.Id);
         return mediaItem;
@@ -815,7 +860,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             .Include(m => m.Movie)
             .FirstOrDefaultAsync(m => m.TmdbId == tmdbId && m.MediaType == MediaType.Movie);
 
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return await EnsureMovieRecordAsync(existing, runtime: null);
 
         var details = await _tmdbClient.GetMovieDetailsAsync(tmdbId);
         if (details is null) return null;
@@ -834,7 +880,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             .Include(m => m.Movie)
             .FirstOrDefaultAsync(m => m.TmdbId == best.Id && m.MediaType == MediaType.Movie);
 
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return await EnsureMovieRecordAsync(existing, runtime: null);
 
         var details = await _tmdbClient.GetMovieDetailsAsync(best.Id);
         if (details is null) return null;
@@ -862,6 +909,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                 : null
         };
 
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+
         _context.MediaItems.Add(mediaItem);
         await _context.SaveChangesAsync();
 
@@ -886,6 +935,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         }
 
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         _logger.LogInformation("Created movie from TMDB: {Name} (TMDB: {TmdbId})", details.Title, details.Id);
         return mediaItem;
@@ -943,7 +993,135 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             });
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+        {
+            var added = _context.ChangeTracker.Entries<ExternalRating>()
+                .Where(e => e.State == EntityState.Added
+                    && e.Entity.MediaItemId == mediaItemId
+                    && e.Entity.Provider == provider)
+                .ToList();
+
+            foreach (var entry in added)
+                entry.State = EntityState.Detached;
+
+            var current = await _context.ExternalRatings
+                .FirstOrDefaultAsync(r => r.MediaItemId == mediaItemId && r.Provider == provider);
+
+            if (current is null)
+                throw;
+
+            current.Score = score;
+            current.VoteCount = voteCount;
+            current.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
+    }
+
+    private async Task<MediaItem> EnsureSeriesRecordAsync(
+        MediaItem mediaItem,
+        TmdbTvDetails? details = null,
+        string? network = null)
+    {
+        var series = mediaItem.Series
+            ?? await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+
+        if (series is null)
+        {
+            _context.Series.Add(new Series
+            {
+                MediaItemId = mediaItem.Id,
+                TotalSeasons = details?.NumberOfSeasons,
+                TotalEpisodes = details?.NumberOfEpisodes,
+                Network = network ?? details?.Networks?.FirstOrDefault()?.Name
+            });
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+            {
+                foreach (var entry in _context.ChangeTracker.Entries<Series>()
+                             .Where(e => e.State == EntityState.Added && e.Entity.MediaItemId == mediaItem.Id)
+                             .ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
+                series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+                if (series is null)
+                    throw;
+            }
+        }
+        else
+        {
+            var changed = false;
+            if (details?.NumberOfSeasons is not null && series.TotalSeasons != details.NumberOfSeasons)
+            {
+                series.TotalSeasons = details.NumberOfSeasons;
+                changed = true;
+            }
+            if (details?.NumberOfEpisodes is not null && series.TotalEpisodes != details.NumberOfEpisodes)
+            {
+                series.TotalEpisodes = details.NumberOfEpisodes;
+                changed = true;
+            }
+            var effectiveNetwork = network ?? details?.Networks?.FirstOrDefault()?.Name;
+            if (!string.IsNullOrWhiteSpace(effectiveNetwork) && series.Network != effectiveNetwork)
+            {
+                series.Network = effectiveNetwork;
+                changed = true;
+            }
+
+            if (changed)
+                await _context.SaveChangesAsync();
+        }
+
+        return mediaItem;
+    }
+
+    private async Task<MediaItem> EnsureMovieRecordAsync(MediaItem mediaItem, int? runtime = null)
+    {
+        var movie = mediaItem.Movie
+            ?? await _context.Movies.FirstOrDefaultAsync(m => m.MediaItemId == mediaItem.Id);
+
+        if (movie is null)
+        {
+            _context.Movies.Add(new Movie
+            {
+                MediaItemId = mediaItem.Id,
+                Runtime = runtime
+            });
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+            {
+                foreach (var entry in _context.ChangeTracker.Entries<Movie>()
+                             .Where(e => e.State == EntityState.Added && e.Entity.MediaItemId == mediaItem.Id)
+                             .ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
+                movie = await _context.Movies.FirstOrDefaultAsync(m => m.MediaItemId == mediaItem.Id);
+                if (movie is null)
+                    throw;
+            }
+        }
+        else if (runtime.HasValue && movie.Runtime != runtime.Value)
+        {
+            movie.Runtime = runtime.Value;
+            await _context.SaveChangesAsync();
+        }
+
+        return mediaItem;
     }
 
     private async Task UpsertImagesAsync(int mediaItemId, int? seasonId, int? episodeId, ImageType imageType, List<TmdbImage>? images)
@@ -983,6 +1161,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
 
     private async Task LinkJellyfinItemAsync(string jellyfinItemId, string name, MediaType type, int mediaItemId)
     {
+        name = string.IsNullOrWhiteSpace(name) ? "Unknown" : name;
+
         var existing = await _context.JellyfinLibraryItems
             .FirstOrDefaultAsync(j => j.JellyfinItemId == jellyfinItemId);
 
@@ -990,6 +1170,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         {
             existing.MediaItemId = mediaItemId;
             existing.Name = name;
+            existing.Type = type;
         }
         else
         {
@@ -1002,7 +1183,41 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             });
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+        {
+            var added = _context.ChangeTracker.Entries<JellyfinLibraryItem>()
+                .Where(e => e.State == EntityState.Added && e.Entity.JellyfinItemId == jellyfinItemId)
+                .ToList();
+
+            foreach (var entry in added)
+                entry.State = EntityState.Detached;
+
+            var current = await _context.JellyfinLibraryItems
+                .FirstOrDefaultAsync(j => j.JellyfinItemId == jellyfinItemId);
+
+            if (current is null)
+                throw;
+
+            current.MediaItemId = mediaItemId;
+            current.Name = name;
+            current.Type = type;
+            await _context.SaveChangesAsync();
+        }
+    }
+
+    private static bool IsSqliteConstraint(DbUpdateException exception)
+    {
+        for (var current = exception.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException { SqliteErrorCode: 19 })
+                return true;
+        }
+
+        return false;
     }
 
     private static string? StripHtmlTags(string? html)

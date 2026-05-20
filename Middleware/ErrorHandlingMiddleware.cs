@@ -33,10 +33,10 @@ public class ErrorHandlingMiddleware
     {
         context.Response.ContentType = "application/json";
 
-        var (statusCode, message, details) = exception switch
+        var (statusCode, message, details) = exception is DbUpdateException dbUpdateException
+            ? HandleDbUpdateException(dbUpdateException)
+            : exception switch
         {
-            DbUpdateException { InnerException: SqliteException sqliteEx } => HandleSqliteException(sqliteEx),
-            DbUpdateException => ((int)HttpStatusCode.BadRequest, "Error saving data", "Verify the data is valid and no duplicates exist"),
             ArgumentException argEx => ((int)HttpStatusCode.BadRequest, "Invalid data", argEx.Message),
             UnauthorizedAccessException => ((int)HttpStatusCode.Unauthorized, "Unauthorized", "You do not have permission to perform this action"),
             KeyNotFoundException => ((int)HttpStatusCode.NotFound, "Resource not found", "The requested item does not exist"),
@@ -50,12 +50,38 @@ public class ErrorHandlingMiddleware
         await context.Response.WriteAsync(jsonResponse);
     }
 
+    private static (int statusCode, string message, string details) HandleDbUpdateException(DbUpdateException dbUpdateException)
+    {
+        var sqliteException = FindInnerException<SqliteException>(dbUpdateException);
+        if (sqliteException is not null)
+            return HandleSqliteException(sqliteException);
+
+        var entityNames = dbUpdateException.Entries.Count == 0
+            ? "unknown entities"
+            : string.Join(", ", dbUpdateException.Entries.Select(e => e.Entity.GetType().Name).Distinct());
+
+        return ((int)HttpStatusCode.BadRequest,
+            "Error saving data",
+            $"EF failed while saving {entityNames}: {dbUpdateException.GetBaseException().Message}");
+    }
+
     private static (int statusCode, string message, string details) HandleSqliteException(SqliteException sqliteEx)
     {
         return sqliteEx.SqliteErrorCode switch
         {
-            19 => ((int)HttpStatusCode.Conflict, "Data conflict", "A record with the same unique value already exists"),
-            _ => ((int)HttpStatusCode.BadRequest, "Database error", $"SQLite error: {sqliteEx.Message}")
+            19 => ((int)HttpStatusCode.Conflict, "Data conflict", $"SQLite constraint failed: {sqliteEx.Message}"),
+            _ => ((int)HttpStatusCode.BadRequest, "Database error", $"SQLite error {sqliteEx.SqliteErrorCode}: {sqliteEx.Message}")
         };
+    }
+
+    private static T? FindInnerException<T>(Exception exception) where T : Exception
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is T typed)
+                return typed;
+        }
+
+        return null;
     }
 }

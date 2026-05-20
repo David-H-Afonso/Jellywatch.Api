@@ -219,8 +219,33 @@ public class DataController : BaseApiController
                 continue;
             }
 
+            var expectedMediaType = row.Type == "movie" ? MediaType.Movie : MediaType.Series;
             var mediaItem = await _context.MediaItems
-                .FirstOrDefaultAsync(m => m.TmdbId == row.TmdbId);
+                .FirstOrDefaultAsync(m => m.TmdbId == row.TmdbId && m.MediaType == expectedMediaType);
+
+            if (mediaItem is not null)
+            {
+                try
+                {
+                    var syntheticId = $"csv-import-{row.TmdbId}";
+                    if (row.Type == "episode")
+                    {
+                        var repaired = await _metadata.ResolveSeriesAsync(syntheticId, row.Title, tmdbId: row.TmdbId);
+                        if (repaired is not null)
+                            mediaItem = repaired;
+                    }
+                    else if (row.Type == "movie")
+                    {
+                        var repaired = await _metadata.ResolveMovieAsync(syntheticId, row.Title, tmdbId: row.TmdbId);
+                        if (repaired is not null)
+                            mediaItem = repaired;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to repair existing TMDB {TmdbId} ({Title}) before import", row.TmdbId, row.Title);
+                }
+            }
 
             if (mediaItem is null)
             {

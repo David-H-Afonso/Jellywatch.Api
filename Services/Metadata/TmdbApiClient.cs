@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Jellywatch.Api.Configuration;
 using Jellywatch.Api.Contracts;
@@ -374,6 +376,42 @@ public class TmdbApiClient : ITmdbApiClient
             });
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsSqliteConstraint(ex))
+        {
+            foreach (var entry in _context.ChangeTracker.Entries<ProviderCacheEntry>()
+                         .Where(e => e.State == EntityState.Added
+                             && e.Entity.Provider == provider
+                             && e.Entity.ExternalId == externalId)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            var current = _context.ProviderCacheEntries
+                .FirstOrDefault(c => c.Provider == provider && c.ExternalId == externalId);
+
+            if (current is null)
+                throw;
+
+            current.ResponseJson = json;
+            current.CachedAt = DateTime.UtcNow;
+            current.ExpiresAt = DateTime.UtcNow.Add(ttl);
+            await _context.SaveChangesAsync();
+        }
+    }
+
+    private static bool IsSqliteConstraint(DbUpdateException exception)
+    {
+        for (var current = exception.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException { SqliteErrorCode: 19 })
+                return true;
+        }
+
+        return false;
     }
 }

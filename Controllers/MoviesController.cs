@@ -192,7 +192,8 @@ public class MoviesController : BaseApiController
                 VoteCount = r.VoteCount
             }).ToList(),
             SpanishTranslation = movie.MediaItem.Translations
-                .Where(t => t.Language.StartsWith("es"))
+                .Where(t => !string.IsNullOrWhiteSpace(t.Language)
+                    && t.Language.StartsWith("es", StringComparison.OrdinalIgnoreCase))
                 .Select(t => new TranslationDto
                 {
                     Language = t.Language,

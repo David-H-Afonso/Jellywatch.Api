@@ -285,7 +285,8 @@ public class SeriesController : BaseApiController
                 }).ToList()
             }).ToList(),
             SpanishTranslation = series.MediaItem.Translations
-                .Where(t => t.Language.StartsWith("es"))
+                .Where(t => !string.IsNullOrWhiteSpace(t.Language)
+                    && t.Language.StartsWith("es", StringComparison.OrdinalIgnoreCase))
                 .Select(t => new TranslationDto
                 {
                     Language = t.Language,

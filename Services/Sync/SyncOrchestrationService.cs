@@ -64,7 +64,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             && !string.IsNullOrWhiteSpace(jellyfinItem.SeriesId))
         {
             var seriesLink = await _context.JellyfinLibraryItems
-                .FirstOrDefaultAsync(li => li.JellyfinItemId == jellyfinItem.SeriesId && li.MediaItemId != null);
+                .FirstOrDefaultAsync(li => li.JellyfinItemId == jellyfinItem.SeriesId);
             mediaItemId = seriesLink?.MediaItemId;
         }
 
@@ -296,12 +296,8 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         }
         catch (Exception ex)
         {
-            syncJob.Status = SyncJobStatus.Failed;
-            syncJob.CompletedAt = DateTime.UtcNow;
-            syncJob.ErrorMessage = ex.Message;
-            await _context.SaveChangesAsync();
-
             _logger.LogError(ex, "Full sync failed");
+            await TryMarkSyncJobFailedAsync(syncJob, ex);
             throw;
         }
     }
@@ -332,11 +328,35 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         }
         catch (Exception ex)
         {
-            syncJob.Status = SyncJobStatus.Failed;
-            syncJob.CompletedAt = DateTime.UtcNow;
-            syncJob.ErrorMessage = ex.Message;
-            await _context.SaveChangesAsync();
+            await TryMarkSyncJobFailedAsync(syncJob, ex);
             throw;
+        }
+    }
+
+    private async Task TryMarkSyncJobFailedAsync(SyncJob syncJob, Exception exception)
+    {
+        // After a failed SaveChanges EF keeps the offending Added/Modified entities
+        // tracked. Detach them before recording the failed job, otherwise the
+        // failure logger retries the same invalid write and hides the real error.
+        foreach (var entry in _context.ChangeTracker.Entries()
+                     .Where(e => !ReferenceEquals(e.Entity, syncJob)
+                         && e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        syncJob.Status = SyncJobStatus.Failed;
+        syncJob.CompletedAt = DateTime.UtcNow;
+        syncJob.ErrorMessage = exception.GetBaseException().Message;
+
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception saveException)
+        {
+            _logger.LogError(saveException, "Failed to persist failed sync job {SyncJobId}", syncJob.Id);
         }
     }
 
@@ -442,7 +462,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 {
                     // ── Episode path ──
                     var seriesLink = await _context.JellyfinLibraryItems
-                        .FirstOrDefaultAsync(j => j.JellyfinItemId == item.SeriesId && j.MediaItemId != null);
+                        .FirstOrDefaultAsync(j => j.JellyfinItemId == item.SeriesId);
 
                     if (seriesLink?.MediaItemId == null)
                     {
@@ -497,7 +517,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                             }
                             // Re-query after import
                             seriesLink = await _context.JellyfinLibraryItems
-                                .FirstOrDefaultAsync(j => j.JellyfinItemId == item.SeriesId && j.MediaItemId != null);
+                                .FirstOrDefaultAsync(j => j.JellyfinItemId == item.SeriesId);
                         }
 
                         if (seriesLink?.MediaItemId == null)
@@ -648,7 +668,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 {
                     // ── Movie path ──
                     var movieLink = await _context.JellyfinLibraryItems
-                        .FirstOrDefaultAsync(j => j.JellyfinItemId == item.Id && j.MediaItemId != null);
+                        .FirstOrDefaultAsync(j => j.JellyfinItemId == item.Id);
 
                     if (movieLink?.MediaItemId == null)
                     {
@@ -686,7 +706,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                             }
                             // Re-query after import
                             movieLink = await _context.JellyfinLibraryItems
-                                .FirstOrDefaultAsync(j => j.JellyfinItemId == item.Id && j.MediaItemId != null);
+                                .FirstOrDefaultAsync(j => j.JellyfinItemId == item.Id);
                         }
 
                         if (movieLink?.MediaItemId == null)

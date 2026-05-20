@@ -77,6 +77,13 @@ public class MediaSearchController : BaseApiController
             return NotFound(new { message = $"Could not find series with TMDB ID {tmdbId}" });
 
         var series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+        if (series is null)
+        {
+            _context.Series.Add(new Series { MediaItemId = mediaItem.Id });
+            await _context.SaveChangesAsync();
+            series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+        }
+
         if (series != null)
             await _metadata.PopulateSeasonsAndEpisodesAsync(series.Id);
 
@@ -119,10 +126,19 @@ public class MediaSearchController : BaseApiController
         await _metadata.RefreshImagesAsync(mediaItem.Id);
 
         var movie = await _context.Movies.FirstOrDefaultAsync(m => m.MediaItemId == mediaItem.Id);
+        if (movie is null)
+        {
+            _context.Movies.Add(new Movie { MediaItemId = mediaItem.Id });
+            await _context.SaveChangesAsync();
+            movie = await _context.Movies.FirstOrDefaultAsync(m => m.MediaItemId == mediaItem.Id);
+        }
+
+        if (movie is null)
+            return StatusCode(500, new { message = "Movie metadata was imported without a movie record" });
 
         // Create a ProfileWatchState entry so this movie shows up for the profile
         var existingState = await _context.ProfileWatchStates
-            .AnyAsync(ws => ws.ProfileId == profileId && ws.MovieId == movie!.Id);
+            .AnyAsync(ws => ws.ProfileId == profileId && ws.MovieId == movie.Id);
 
         if (!existingState && movie != null)
         {
