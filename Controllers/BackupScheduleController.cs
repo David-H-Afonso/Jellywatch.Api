@@ -101,7 +101,7 @@ public class BackupScheduleController : BaseApiController
     // ── POST /api/backupschedule/run-now ─────────────────────────────────────
 
     [HttpPost("run-now")]
-    public async Task<IActionResult> RunNow()
+    public IActionResult RunNow()
     {
         var authResult = RequireUserId();
         if (authResult is not OkResult) return authResult;

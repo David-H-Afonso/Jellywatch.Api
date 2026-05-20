@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Configuration;
 using Jellywatch.Api.Infrastructure;
@@ -295,126 +296,23 @@ try
         var context = scope.ServiceProvider.GetRequiredService<JellywatchDbContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
 
-        var conn = context.Database.GetDbConnection();
-        await conn.OpenAsync();
-
-        // Check if we are upgrading from pre-squash migrations (old individual migration IDs present)
-        using (var checkCmd = conn.CreateCommand())
+        await context.Database.OpenConnectionAsync();
+        try
         {
-            checkCmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='__EFMigrationsHistory'";
-            var historyExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
-
-            if (historyExists)
-            {
-                checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
-                var oldCount = (long)(await checkCmd.ExecuteScalarAsync())!;
-
-                if (oldCount > 0)
-                {
-                    logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
-
-                    // Delete ONLY the old April pre-squash migrations, keeping newer ones intact
-                    checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
-                    await checkCmd.ExecuteNonQueryAsync();
-
-                    // Mark the squashed migration as already applied if it isn't recorded yet
-                    checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId = '20260409132911_InitialCreate'";
-                    var hasInitial = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
-                    if (!hasInitial)
-                    {
-                        checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
-                        await checkCmd.ExecuteNonQueryAsync();
-                    }
-
-                    logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
-                }
-
-                // Self-healing check for applied migrations:
-                // If a table exists in the database but its migration is not in the history table,
-                // insert it to prevent EF Core from trying to create it again and crashing.
-                var checkMigrations = new (string TableName, string MigrationId)[]
-                {
-                    ("backup_schedule", "20260506182748_AddBackupSchedule"),
-                    ("watchlist", "20260520095742_AddWatchlistsAndDashboardPreference")
-                };
-
-                foreach (var (tableName, migrationId) in checkMigrations)
-                {
-                    checkCmd.CommandText = $"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{tableName}'";
-                    var tableExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
-                    if (tableExists)
-                    {
-                        checkCmd.CommandText = $"SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId = '{migrationId}'";
-                        var migrationRecorded = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
-                        if (!migrationRecorded)
-                        {
-                            logger.LogInformation("Table '{Table}' exists but migration '{Migration}' is missing from history. Recording it as applied.", tableName, migrationId);
-                            checkCmd.CommandText = $"INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('{migrationId}', '9.0.4')";
-                            await checkCmd.ExecuteNonQueryAsync();
-                        }
-                    }
-                }
-
-                // Always run on any existing DB — idempotent column/table additions.
-                // Covers: pre-squash upgrades AND DBs that were already patched but still
-                // missing columns added after the original migrations were created.
-                var newColumns = new (string Table, string Column, string Type)[]
-                {
-                    ("media_item", "tvdb_id", "INTEGER"),
-                    ("media_item", "original_title", "TEXT"),
-                    ("media_item", "imdb_id", "TEXT"),
-                    ("media_item", "original_language", "TEXT"),
-                    ("media_item", "genres", "TEXT"),
-                    ("episode", "air_time", "TEXT"),
-                    ("episode", "air_time_utc", "TEXT"),
-                    ("episode", "TmdbRating", "REAL"),
-                    ("season", "TmdbRating", "REAL"),
-                    ("watch_event", "CreatedAt", "TEXT"),
-                    ("profile_watch_state", "include_in_dashboard", "INTEGER"),
-                    ("profile_watch_state", "exclude_from_dashboard", "INTEGER"),
-                };
-                foreach (var (table, column, colType) in newColumns)
-                {
-                    try
-                    {
-                        checkCmd.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {colType}";
-                        await checkCmd.ExecuteNonQueryAsync();
-                        logger.LogInformation("Added column {Column} to {Table}", column, table);
-                    }
-                    catch { /* column already exists — safe to ignore */ }
-                }
-
-                // New tables — create them if absent (safe to run every startup)
-                checkCmd.CommandText = """
-                    CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
-                        "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
-                        "JellyfinItemId" TEXT NOT NULL,
-                        "DisplayName" TEXT,
-                        "Reason" TEXT,
-                        "CreatedAt" TEXT NOT NULL
-                    )
-                    """;
-                await checkCmd.ExecuteNonQueryAsync();
-
-                checkCmd.CommandText = """
-                    CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
-                        "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
-                        "ProfileId" INTEGER NOT NULL,
-                        "MediaItemId" INTEGER NOT NULL,
-                        "CreatedAt" TEXT NOT NULL
-                    )
-                    """;
-                await checkCmd.ExecuteNonQueryAsync();
-            }
+            await PrepareDatabaseForMigrationsAsync(context.Database.GetDbConnection(), logger);
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync();
         }
 
-        await conn.CloseAsync();
-        context.Database.Migrate();
+        await context.Database.MigrateAsync();
     }
 }
 catch (Exception ex)
 {
-    var logger = app.Services.CreateScope().ServiceProvider.GetRequiredService<ILogger<Program>>();
+    using var scope = app.Services.CreateScope();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
     logger.LogError(ex, "Database initialization failed - API will continue running. Check database path and permissions.");
 }
 
@@ -431,3 +329,498 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = Dat
     .AllowAnonymous();
 
 app.Run();
+
+static async Task PrepareDatabaseForMigrationsAsync(DbConnection connection, ILogger logger)
+{
+    var hasInitialSchema = await HasInitialSchemaAsync(connection);
+    var historyExists = await TableExistsAsync(connection, "__EFMigrationsHistory");
+
+    if (!historyExists && hasInitialSchema)
+    {
+        logger.LogInformation("Existing Jellywatch schema detected without EF migration history. Creating migration history table.");
+        await EnsureMigrationHistoryTableAsync(connection);
+        historyExists = true;
+    }
+
+    if (!historyExists)
+    {
+        return;
+    }
+
+    if (!hasInitialSchema)
+    {
+        logger.LogWarning("EF migration history exists, but the base Jellywatch tables are missing. Skipping startup schema repairs and leaving EF Core to apply any pending migrations.");
+        return;
+    }
+
+    await RecordMigrationIfMissingAsync(connection, "20260409132911_InitialCreate", logger);
+    await UpgradePreSquashMigrationHistoryAsync(connection, logger);
+    await RepairInitialSchemaDriftAsync(connection, logger);
+    await RepairBackupScheduleSchemaAsync(connection, logger);
+    await RepairWatchlistSchemaAsync(connection, logger);
+}
+
+static async Task<bool> HasInitialSchemaAsync(DbConnection connection)
+{
+    return await TableExistsAsync(connection, "user")
+        && await TableExistsAsync(connection, "media_item")
+        && await TableExistsAsync(connection, "profile_watch_state");
+}
+
+static async Task UpgradePreSquashMigrationHistoryAsync(DbConnection connection, ILogger logger)
+{
+    var oldCount = await ExecuteScalarLongAsync(
+        connection,
+        "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'");
+
+    if (oldCount == 0)
+    {
+        return;
+    }
+
+    logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
+    await ExecuteNonQueryAsync(
+        connection,
+        "DELETE FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'");
+    await RecordMigrationIfMissingAsync(connection, "20260409132911_InitialCreate", logger);
+    logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
+}
+
+static async Task RepairInitialSchemaDriftAsync(DbConnection connection, ILogger logger)
+{
+    await EnsureBlacklistedItemsSchemaAsync(connection, logger);
+    await EnsureProfileMediaBlocksSchemaAsync(connection, logger);
+
+    var columns = new (string Table, string Column, string Definition)[]
+    {
+        ("media_item", "tvdb_id", "INTEGER"),
+        ("media_item", "original_title", "TEXT"),
+        ("media_item", "imdb_id", "TEXT"),
+        ("media_item", "original_language", "TEXT"),
+        ("media_item", "genres", "TEXT"),
+        ("episode", "air_time", "TEXT"),
+        ("episode", "air_time_utc", "TEXT"),
+        ("episode", "TmdbRating", "REAL"),
+        ("season", "TmdbRating", "REAL"),
+        ("watch_event", "CreatedAt", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'")
+    };
+
+    foreach (var (table, column, definition) in columns)
+    {
+        await AddColumnIfMissingAsync(connection, table, column, definition, logger);
+    }
+}
+
+static async Task RepairBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
+{
+    var migrationRecorded = await MigrationRecordedAsync(connection, "20260506182748_AddBackupSchedule");
+    var tableExists = await TableExistsAsync(connection, "backup_schedule");
+
+    if (!migrationRecorded && !tableExists)
+    {
+        return;
+    }
+
+    await EnsureBackupScheduleSchemaAsync(connection, logger);
+    await RecordMigrationIfMissingAsync(connection, "20260506182748_AddBackupSchedule", logger);
+}
+
+static async Task RepairWatchlistSchemaAsync(DbConnection connection, ILogger logger)
+{
+    var migrationRecorded = await MigrationRecordedAsync(connection, "20260520095742_AddWatchlistsAndDashboardPreference");
+    var hasWatchlistArtifact = await TableExistsAsync(connection, "watchlist")
+        || await TableExistsAsync(connection, "watchlist_member")
+        || await TableExistsAsync(connection, "watchlist_item")
+        || await TableExistsAsync(connection, "watchlist_invitation")
+        || await TableExistsAsync(connection, "watchlist_access_request")
+        || await TableExistsAsync(connection, "user_watchlist_preference")
+        || await ColumnExistsAsync(connection, "profile_watch_state", "include_in_dashboard")
+        || await ColumnExistsAsync(connection, "profile_watch_state", "exclude_from_dashboard");
+
+    if (!migrationRecorded && !hasWatchlistArtifact)
+    {
+        return;
+    }
+
+    await EnsureWatchlistSchemaAsync(connection, logger);
+    await RecordMigrationIfMissingAsync(connection, "20260520095742_AddWatchlistsAndDashboardPreference", logger);
+}
+
+static async Task EnsureBlacklistedItemsSchemaAsync(DbConnection connection, ILogger logger)
+{
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "BlacklistedItems" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_BlacklistedItems" PRIMARY KEY AUTOINCREMENT,
+            "JellyfinItemId" TEXT NOT NULL,
+            "DisplayName" TEXT,
+            "Reason" TEXT,
+            "CreatedAt" TEXT NOT NULL
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "BlacklistedItems", "JellyfinItemId", "TEXT NOT NULL DEFAULT ''", logger);
+    await AddColumnIfMissingAsync(connection, "BlacklistedItems", "DisplayName", "TEXT", logger);
+    await AddColumnIfMissingAsync(connection, "BlacklistedItems", "Reason", "TEXT", logger);
+    await AddColumnIfMissingAsync(connection, "BlacklistedItems", "CreatedAt", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+}
+
+static async Task EnsureProfileMediaBlocksSchemaAsync(DbConnection connection, ILogger logger)
+{
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "ProfileMediaBlocks" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_ProfileMediaBlocks" PRIMARY KEY AUTOINCREMENT,
+            "ProfileId" INTEGER NOT NULL,
+            "MediaItemId" INTEGER NOT NULL,
+            "CreatedAt" TEXT NOT NULL,
+            CONSTRAINT "FK_ProfileMediaBlocks_media_item_MediaItemId" FOREIGN KEY ("MediaItemId") REFERENCES "media_item" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_ProfileMediaBlocks_profile_ProfileId" FOREIGN KEY ("ProfileId") REFERENCES "profile" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "ProfileMediaBlocks", "ProfileId", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "ProfileMediaBlocks", "MediaItemId", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "ProfileMediaBlocks", "CreatedAt", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_ProfileMediaBlocks_ProfileId" ON "ProfileMediaBlocks" ("ProfileId")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_ProfileMediaBlocks_MediaItemId" ON "ProfileMediaBlocks" ("MediaItemId")""");
+}
+
+static async Task EnsureBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
+{
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "backup_schedule" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_backup_schedule" PRIMARY KEY AUTOINCREMENT,
+            "user_id" INTEGER NOT NULL,
+            "is_enabled" INTEGER NOT NULL DEFAULT 0,
+            "backup_hour" INTEGER NOT NULL DEFAULT 3,
+            "backup_minute" INTEGER NOT NULL DEFAULT 0,
+            "destination_path" TEXT NOT NULL DEFAULT '/backups',
+            "file_name_prefix" TEXT NOT NULL DEFAULT '',
+            "file_name_suffix" TEXT NOT NULL DEFAULT '',
+            "retention_count" INTEGER NOT NULL DEFAULT 7,
+            "last_run_at" TEXT,
+            "last_run_status" TEXT NOT NULL DEFAULT 'never',
+            "last_run_message" TEXT,
+            CONSTRAINT "FK_backup_schedule_user_user_id" FOREIGN KEY ("user_id") REFERENCES "user" ("id") ON DELETE CASCADE
+        )
+        """);
+
+    var columns = new (string Column, string Definition)[]
+    {
+        ("user_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("backup_hour", "INTEGER NOT NULL DEFAULT 3"),
+        ("backup_minute", "INTEGER NOT NULL DEFAULT 0"),
+        ("destination_path", "TEXT NOT NULL DEFAULT '/backups'"),
+        ("file_name_prefix", "TEXT NOT NULL DEFAULT ''"),
+        ("file_name_suffix", "TEXT NOT NULL DEFAULT ''"),
+        ("retention_count", "INTEGER NOT NULL DEFAULT 7"),
+        ("last_run_at", "TEXT"),
+        ("last_run_status", "TEXT NOT NULL DEFAULT 'never'"),
+        ("last_run_message", "TEXT")
+    };
+
+    foreach (var (column, definition) in columns)
+    {
+        await AddColumnIfMissingAsync(connection, "backup_schedule", column, definition, logger);
+    }
+
+    await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_backup_schedule_user_id" ON "backup_schedule" ("user_id")""");
+}
+
+static async Task EnsureWatchlistSchemaAsync(DbConnection connection, ILogger logger)
+{
+    await AddColumnIfMissingAsync(connection, "profile_watch_state", "include_in_dashboard", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "profile_watch_state", "exclude_from_dashboard", "INTEGER NOT NULL DEFAULT 0", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "watchlist" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_watchlist" PRIMARY KEY AUTOINCREMENT,
+            "name" TEXT NOT NULL,
+            "description" TEXT,
+            "owner_user_id" INTEGER NOT NULL,
+            "state" INTEGER NOT NULL,
+            "created_at" TEXT NOT NULL,
+            "updated_at" TEXT NOT NULL,
+            CONSTRAINT "FK_watchlist_user_owner_user_id" FOREIGN KEY ("owner_user_id") REFERENCES "user" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "watchlist", "name", "TEXT NOT NULL DEFAULT ''", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist", "description", "TEXT", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist", "owner_user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist", "state", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "user_watchlist_preference" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_user_watchlist_preference" PRIMARY KEY AUTOINCREMENT,
+            "user_id" INTEGER NOT NULL,
+            "default_watchlist_id" INTEGER,
+            "updated_at" TEXT NOT NULL,
+            CONSTRAINT "FK_user_watchlist_preference_user_user_id" FOREIGN KEY ("user_id") REFERENCES "user" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_user_watchlist_preference_watchlist_default_watchlist_id" FOREIGN KEY ("default_watchlist_id") REFERENCES "watchlist" ("id") ON DELETE SET NULL
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "user_watchlist_preference", "user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "user_watchlist_preference", "default_watchlist_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "user_watchlist_preference", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "watchlist_access_request" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_watchlist_access_request" PRIMARY KEY AUTOINCREMENT,
+            "watchlist_id" INTEGER NOT NULL,
+            "requesting_user_id" INTEGER NOT NULL,
+            "status" INTEGER NOT NULL,
+            "message" TEXT,
+            "responded_by_user_id" INTEGER,
+            "created_at" TEXT NOT NULL,
+            "responded_at" TEXT,
+            CONSTRAINT "FK_watchlist_access_request_user_requesting_user_id" FOREIGN KEY ("requesting_user_id") REFERENCES "user" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_watchlist_access_request_user_responded_by_user_id" FOREIGN KEY ("responded_by_user_id") REFERENCES "user" ("id") ON DELETE SET NULL,
+            CONSTRAINT "FK_watchlist_access_request_watchlist_watchlist_id" FOREIGN KEY ("watchlist_id") REFERENCES "watchlist" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "watchlist_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "requesting_user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "status", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "message", "TEXT", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "responded_by_user_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_access_request", "responded_at", "TEXT", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "watchlist_invitation" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_watchlist_invitation" PRIMARY KEY AUTOINCREMENT,
+            "watchlist_id" INTEGER NOT NULL,
+            "invited_user_id" INTEGER NOT NULL,
+            "invited_by_user_id" INTEGER NOT NULL,
+            "status" INTEGER NOT NULL,
+            "role" INTEGER NOT NULL,
+            "can_add_items" INTEGER NOT NULL DEFAULT 1,
+            "can_remove_items" INTEGER NOT NULL DEFAULT 0,
+            "can_reorder_items" INTEGER NOT NULL DEFAULT 1,
+            "can_update_item_status" INTEGER NOT NULL DEFAULT 1,
+            "can_invite_members" INTEGER NOT NULL DEFAULT 0,
+            "can_manage_members" INTEGER NOT NULL DEFAULT 0,
+            "can_update_watchlist" INTEGER NOT NULL DEFAULT 0,
+            "message" TEXT,
+            "created_at" TEXT NOT NULL,
+            "responded_at" TEXT,
+            CONSTRAINT "FK_watchlist_invitation_user_invited_by_user_id" FOREIGN KEY ("invited_by_user_id") REFERENCES "user" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_watchlist_invitation_user_invited_user_id" FOREIGN KEY ("invited_user_id") REFERENCES "user" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_watchlist_invitation_watchlist_watchlist_id" FOREIGN KEY ("watchlist_id") REFERENCES "watchlist" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "watchlist_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "invited_user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "invited_by_user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "status", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "role", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_add_items", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_remove_items", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_reorder_items", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_update_item_status", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_invite_members", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_manage_members", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "can_update_watchlist", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "message", "TEXT", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_invitation", "responded_at", "TEXT", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "watchlist_item" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_watchlist_item" PRIMARY KEY AUTOINCREMENT,
+            "watchlist_id" INTEGER NOT NULL,
+            "item_type" INTEGER NOT NULL,
+            "media_item_id" INTEGER,
+            "child_watchlist_id" INTEGER,
+            "status" INTEGER NOT NULL,
+            "position" INTEGER NOT NULL,
+            "added_by_user_id" INTEGER,
+            "created_at" TEXT NOT NULL,
+            "updated_at" TEXT NOT NULL,
+            CONSTRAINT "FK_watchlist_item_media_item_media_item_id" FOREIGN KEY ("media_item_id") REFERENCES "media_item" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_watchlist_item_user_added_by_user_id" FOREIGN KEY ("added_by_user_id") REFERENCES "user" ("id") ON DELETE SET NULL,
+            CONSTRAINT "FK_watchlist_item_watchlist_child_watchlist_id" FOREIGN KEY ("child_watchlist_id") REFERENCES "watchlist" ("id") ON DELETE RESTRICT,
+            CONSTRAINT "FK_watchlist_item_watchlist_watchlist_id" FOREIGN KEY ("watchlist_id") REFERENCES "watchlist" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "watchlist_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "item_type", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "media_item_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "child_watchlist_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "status", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "position", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "added_by_user_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_item", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "watchlist_member" (
+            "id" INTEGER NOT NULL CONSTRAINT "PK_watchlist_member" PRIMARY KEY AUTOINCREMENT,
+            "watchlist_id" INTEGER NOT NULL,
+            "user_id" INTEGER NOT NULL,
+            "role" INTEGER NOT NULL,
+            "invited_by_user_id" INTEGER,
+            "can_add_items" INTEGER NOT NULL DEFAULT 1,
+            "can_remove_items" INTEGER NOT NULL DEFAULT 0,
+            "can_reorder_items" INTEGER NOT NULL DEFAULT 1,
+            "can_update_item_status" INTEGER NOT NULL DEFAULT 1,
+            "can_invite_members" INTEGER NOT NULL DEFAULT 0,
+            "can_manage_members" INTEGER NOT NULL DEFAULT 0,
+            "can_update_watchlist" INTEGER NOT NULL DEFAULT 0,
+            "created_at" TEXT NOT NULL,
+            "updated_at" TEXT NOT NULL,
+            CONSTRAINT "FK_watchlist_member_user_invited_by_user_id" FOREIGN KEY ("invited_by_user_id") REFERENCES "user" ("id") ON DELETE SET NULL,
+            CONSTRAINT "FK_watchlist_member_user_user_id" FOREIGN KEY ("user_id") REFERENCES "user" ("id") ON DELETE CASCADE,
+            CONSTRAINT "FK_watchlist_member_watchlist_watchlist_id" FOREIGN KEY ("watchlist_id") REFERENCES "watchlist" ("id") ON DELETE CASCADE
+        )
+        """);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "watchlist_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "user_id", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "role", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "invited_by_user_id", "INTEGER", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_add_items", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_remove_items", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_reorder_items", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_update_item_status", "INTEGER NOT NULL DEFAULT 1", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_invite_members", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_manage_members", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "can_update_watchlist", "INTEGER NOT NULL DEFAULT 0", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await AddColumnIfMissingAsync(connection, "watchlist_member", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+
+    await EnsureWatchlistIndexesAsync(connection);
+}
+
+static async Task EnsureWatchlistIndexesAsync(DbConnection connection)
+{
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_user_watchlist_preference_default_watchlist_id" ON "user_watchlist_preference" ("default_watchlist_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_user_watchlist_preference_user_id" ON "user_watchlist_preference" ("user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_owner_user_id" ON "watchlist" ("owner_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_access_request_requesting_user_id" ON "watchlist_access_request" ("requesting_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_access_request_responded_by_user_id" ON "watchlist_access_request" ("responded_by_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_access_request_watchlist_id_requesting_user_id_status" ON "watchlist_access_request" ("watchlist_id", "requesting_user_id", "status")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_invitation_invited_by_user_id" ON "watchlist_invitation" ("invited_by_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_invitation_invited_user_id" ON "watchlist_invitation" ("invited_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_invitation_watchlist_id_invited_user_id_status" ON "watchlist_invitation" ("watchlist_id", "invited_user_id", "status")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_item_added_by_user_id" ON "watchlist_item" ("added_by_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_item_child_watchlist_id" ON "watchlist_item" ("child_watchlist_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_item_media_item_id" ON "watchlist_item" ("media_item_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_watchlist_item_watchlist_id_child_watchlist_id" ON "watchlist_item" ("watchlist_id", "child_watchlist_id") WHERE child_watchlist_id IS NOT NULL""");
+    await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_watchlist_item_watchlist_id_media_item_id" ON "watchlist_item" ("watchlist_id", "media_item_id") WHERE media_item_id IS NOT NULL""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_item_watchlist_id_position" ON "watchlist_item" ("watchlist_id", "position")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_member_invited_by_user_id" ON "watchlist_member" ("invited_by_user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_watchlist_member_user_id" ON "watchlist_member" ("user_id")""");
+    await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_watchlist_member_watchlist_id_user_id" ON "watchlist_member" ("watchlist_id", "user_id")""");
+}
+
+static async Task EnsureMigrationHistoryTableAsync(DbConnection connection)
+{
+    await ExecuteNonQueryAsync(connection, """
+        CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" (
+            "MigrationId" TEXT NOT NULL CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY,
+            "ProductVersion" TEXT NOT NULL
+        )
+        """);
+}
+
+static async Task RecordMigrationIfMissingAsync(DbConnection connection, string migrationId, ILogger logger)
+{
+    await EnsureMigrationHistoryTableAsync(connection);
+
+    if (await MigrationRecordedAsync(connection, migrationId))
+    {
+        return;
+    }
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+        VALUES ($migrationId, '9.0.0')
+        """;
+    var parameter = command.CreateParameter();
+    parameter.ParameterName = "$migrationId";
+    parameter.Value = migrationId;
+    command.Parameters.Add(parameter);
+    await command.ExecuteNonQueryAsync();
+    logger.LogInformation("Recorded migration '{Migration}' after verifying/repairing its schema.", migrationId);
+}
+
+static async Task<bool> MigrationRecordedAsync(DbConnection connection, string migrationId)
+{
+    if (!await TableExistsAsync(connection, "__EFMigrationsHistory"))
+    {
+        return false;
+    }
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = $migrationId";
+    var parameter = command.CreateParameter();
+    parameter.ParameterName = "$migrationId";
+    parameter.Value = migrationId;
+    command.Parameters.Add(parameter);
+    return Convert.ToInt64(await command.ExecuteScalarAsync()) > 0;
+}
+
+static async Task<bool> TableExistsAsync(DbConnection connection, string tableName)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $tableName";
+    var parameter = command.CreateParameter();
+    parameter.ParameterName = "$tableName";
+    parameter.Value = tableName;
+    command.Parameters.Add(parameter);
+    return Convert.ToInt64(await command.ExecuteScalarAsync()) > 0;
+}
+
+static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableName, string columnName)
+{
+    if (!await TableExistsAsync(connection, tableName))
+    {
+        return false;
+    }
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"PRAGMA table_info({QuoteIdentifier(tableName)})";
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        if (string.Equals(reader["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static async Task AddColumnIfMissingAsync(DbConnection connection, string tableName, string columnName, string columnDefinition, ILogger logger)
+{
+    if (!await TableExistsAsync(connection, tableName) || await ColumnExistsAsync(connection, tableName, columnName))
+    {
+        return;
+    }
+
+    await ExecuteNonQueryAsync(
+        connection,
+        $"ALTER TABLE {QuoteIdentifier(tableName)} ADD COLUMN {QuoteIdentifier(columnName)} {columnDefinition}");
+    logger.LogInformation("Added missing column {Table}.{Column}", tableName, columnName);
+}
+
+static async Task<long> ExecuteScalarLongAsync(DbConnection connection, string sql)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = sql;
+    return Convert.ToInt64(await command.ExecuteScalarAsync());
+}
+
+static async Task ExecuteNonQueryAsync(DbConnection connection, string sql)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = sql;
+    await command.ExecuteNonQueryAsync();
+}
+
+static string QuoteIdentifier(string identifier)
+{
+    return "\"" + identifier.Replace("\"", "\"\"") + "\"";
+}
