@@ -685,15 +685,11 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnName("episode_id");
 
                     b.Property<bool>("ExcludeFromDashboard")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
-                        .HasDefaultValue(false)
                         .HasColumnName("exclude_from_dashboard");
 
                     b.Property<bool>("IncludeInDashboard")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
-                        .HasDefaultValue(false)
                         .HasColumnName("include_in_dashboard");
 
                     b.Property<bool>("IsManualOverride")

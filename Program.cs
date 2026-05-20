@@ -410,6 +410,7 @@ static async Task RepairInitialSchemaDriftAsync(DbConnection connection, ILogger
         await AddColumnIfMissingAsync(connection, table, column, definition, logger);
     }
 
+    await RepairProfileWatchStateDataAsync(connection, logger);
 }
 
 static async Task RepairBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
@@ -481,6 +482,131 @@ static async Task EnsureProfileMediaBlocksSchemaAsync(DbConnection connection, I
     await AddColumnIfMissingAsync(connection, "ProfileMediaBlocks", "CreatedAt", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
     await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_ProfileMediaBlocks_ProfileId" ON "ProfileMediaBlocks" ("ProfileId")""");
     await ExecuteNonQueryAsync(connection, """CREATE INDEX IF NOT EXISTS "IX_ProfileMediaBlocks_MediaItemId" ON "ProfileMediaBlocks" ("MediaItemId")""");
+}
+
+static async Task RepairProfileWatchStateDataAsync(DbConnection connection, ILogger logger)
+{
+    if (!await TableExistsAsync(connection, "profile_watch_state"))
+    {
+        return;
+    }
+
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "state", "0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "is_manual_override", "0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "include_in_dashboard", "0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "exclude_from_dashboard", "0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "last_updated", "'0001-01-01T00:00:00.0000000'", logger);
+
+    await ExecuteLoggedNonQueryAsync(connection, """
+        UPDATE "profile_watch_state"
+        SET "media_item_id" = (
+            SELECT "series"."media_item_id"
+            FROM "episode"
+            INNER JOIN "season" ON "episode"."season_id" = "season"."id"
+            INNER JOIN "series" ON "season"."series_id" = "series"."id"
+            WHERE "episode"."id" = "profile_watch_state"."episode_id"
+        )
+        WHERE "media_item_id" IS NULL
+          AND "episode_id" IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM "episode"
+              INNER JOIN "season" ON "episode"."season_id" = "season"."id"
+              INNER JOIN "series" ON "season"."series_id" = "series"."id"
+              WHERE "episode"."id" = "profile_watch_state"."episode_id"
+                AND "series"."media_item_id" IS NOT NULL
+          )
+        """, logger, "Backfilled {Count} profile watch state media item id(s) from episode links.");
+
+    await ExecuteLoggedNonQueryAsync(connection, """
+        UPDATE "profile_watch_state"
+        SET "media_item_id" = (
+            SELECT "series"."media_item_id"
+            FROM "season"
+            INNER JOIN "series" ON "season"."series_id" = "series"."id"
+            WHERE "season"."id" = "profile_watch_state"."season_id"
+        )
+        WHERE "media_item_id" IS NULL
+          AND "season_id" IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM "season"
+              INNER JOIN "series" ON "season"."series_id" = "series"."id"
+              WHERE "season"."id" = "profile_watch_state"."season_id"
+                AND "series"."media_item_id" IS NOT NULL
+          )
+        """, logger, "Backfilled {Count} profile watch state media item id(s) from season links.");
+
+    await ExecuteLoggedNonQueryAsync(connection, """
+        UPDATE "profile_watch_state"
+        SET "media_item_id" = (
+            SELECT "movie"."media_item_id"
+            FROM "movie"
+            WHERE "movie"."id" = "profile_watch_state"."movie_id"
+        )
+        WHERE "media_item_id" IS NULL
+          AND "movie_id" IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM "movie"
+              WHERE "movie"."id" = "profile_watch_state"."movie_id"
+                AND "movie"."media_item_id" IS NOT NULL
+          )
+        """, logger, "Backfilled {Count} profile watch state media item id(s) from movie links.");
+
+    await ExecuteLoggedNonQueryAsync(connection, """
+        DELETE FROM "profile_watch_state"
+        WHERE "profile_id" IS NULL
+           OR "media_item_id" IS NULL
+           OR NOT EXISTS (
+               SELECT 1
+               FROM "profile"
+               WHERE "profile"."id" = "profile_watch_state"."profile_id"
+           )
+           OR NOT EXISTS (
+               SELECT 1
+               FROM "media_item"
+               WHERE "media_item"."id" = "profile_watch_state"."media_item_id"
+           )
+           OR (
+               "episode_id" IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM "episode"
+                   WHERE "episode"."id" = "profile_watch_state"."episode_id"
+               )
+           )
+           OR (
+               "season_id" IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM "season"
+                   WHERE "season"."id" = "profile_watch_state"."season_id"
+               )
+           )
+           OR (
+               "movie_id" IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM "movie"
+                   WHERE "movie"."id" = "profile_watch_state"."movie_id"
+               )
+           )
+        """, logger, "Deleted {Count} invalid profile watch state row(s) with missing required references.");
+
+    await ExecuteLoggedNonQueryAsync(connection, """
+        DELETE FROM "profile_watch_state"
+        WHERE "id" NOT IN (
+            SELECT MAX("id")
+            FROM "profile_watch_state"
+            GROUP BY
+                "profile_id",
+                "media_item_id",
+                COALESCE("episode_id", -1),
+                COALESCE("season_id", -1),
+                COALESCE("movie_id", -1)
+        )
+        """, logger, "Deleted {Count} duplicate profile watch state row(s).");
 }
 
 static async Task EnsureBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
@@ -867,6 +993,17 @@ static async Task ExecuteNonQueryAsync(DbConnection connection, string sql)
     await using var command = connection.CreateCommand();
     command.CommandText = sql;
     await command.ExecuteNonQueryAsync();
+}
+
+static async Task ExecuteLoggedNonQueryAsync(DbConnection connection, string sql, ILogger logger, string messageTemplate)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = sql;
+    var affected = await command.ExecuteNonQueryAsync();
+    if (affected > 0)
+    {
+        logger.LogInformation(messageTemplate, affected);
+    }
 }
 
 static string QuoteIdentifier(string identifier)

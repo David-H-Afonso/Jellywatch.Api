@@ -293,8 +293,8 @@ public class JellywatchDbContext : DbContext
             e.Property(x => x.MovieId).HasColumnName("movie_id");
             e.Property(x => x.State).HasColumnName("state");
             e.Property(x => x.IsManualOverride).HasColumnName("is_manual_override");
-            e.Property(x => x.IncludeInDashboard).HasColumnName("include_in_dashboard").HasDefaultValue(false);
-            e.Property(x => x.ExcludeFromDashboard).HasColumnName("exclude_from_dashboard").HasDefaultValue(false);
+            e.Property(x => x.IncludeInDashboard).HasColumnName("include_in_dashboard");
+            e.Property(x => x.ExcludeFromDashboard).HasColumnName("exclude_from_dashboard");
             e.Property(x => x.UserRating).HasColumnName("user_rating").HasColumnType("decimal(4,2)");
             e.Property(x => x.LastUpdated).HasColumnName("last_updated");
             e.HasOne(x => x.Profile).WithMany(p => p.WatchStates).HasForeignKey(x => x.ProfileId).OnDelete(DeleteBehavior.Cascade);
