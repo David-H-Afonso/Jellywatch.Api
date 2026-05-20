@@ -35,6 +35,12 @@ public class JellywatchDbContext : DbContext
     public DbSet<BlacklistedItem> BlacklistedItems { get; set; }
     public DbSet<ProfileMediaBlock> ProfileMediaBlocks { get; set; }
     public DbSet<BackupSchedule> BackupSchedules { get; set; }
+    public DbSet<Watchlist> Watchlists { get; set; }
+    public DbSet<WatchlistMember> WatchlistMembers { get; set; }
+    public DbSet<WatchlistItem> WatchlistItems { get; set; }
+    public DbSet<WatchlistInvitation> WatchlistInvitations { get; set; }
+    public DbSet<WatchlistAccessRequest> WatchlistAccessRequests { get; set; }
+    public DbSet<UserWatchlistPreference> UserWatchlistPreferences { get; set; }
 
     public override int SaveChanges()
     {
@@ -71,6 +77,12 @@ public class JellywatchDbContext : DbContext
                 else if (entry.Entity is BlacklistedItem bl) { bl.CreatedAt = now; }
                 else if (entry.Entity is ProfileMediaBlock pmb) { pmb.CreatedAt = now; }
                 else if (entry.Entity is JellyfinLibraryItem jli) { jli.CreatedAt = now; jli.UpdatedAt = now; }
+                else if (entry.Entity is Watchlist wl) { wl.CreatedAt = now; wl.UpdatedAt = now; }
+                else if (entry.Entity is WatchlistMember wlm) { wlm.CreatedAt = now; wlm.UpdatedAt = now; }
+                else if (entry.Entity is WatchlistItem wli) { wli.CreatedAt = now; wli.UpdatedAt = now; }
+                else if (entry.Entity is WatchlistInvitation winv) { winv.CreatedAt = now; }
+                else if (entry.Entity is WatchlistAccessRequest war) { war.CreatedAt = now; }
+                else if (entry.Entity is UserWatchlistPreference uwp) { uwp.UpdatedAt = now; }
             }
             else if (entry.State == EntityState.Modified)
             {
@@ -85,6 +97,10 @@ public class JellywatchDbContext : DbContext
                 else if (entry.Entity is ProfileNote pn) { pn.UpdatedAt = now; }
                 else if (entry.Entity is ProfileWatchState pws) { pws.LastUpdated = now; }
                 else if (entry.Entity is JellyfinLibraryItem jli) { jli.UpdatedAt = now; }
+                else if (entry.Entity is Watchlist wl) { wl.UpdatedAt = now; }
+                else if (entry.Entity is WatchlistMember wlm) { wlm.UpdatedAt = now; }
+                else if (entry.Entity is WatchlistItem wli) { wli.UpdatedAt = now; }
+                else if (entry.Entity is UserWatchlistPreference uwp) { uwp.UpdatedAt = now; }
             }
         }
     }
@@ -277,6 +293,8 @@ public class JellywatchDbContext : DbContext
             e.Property(x => x.MovieId).HasColumnName("movie_id");
             e.Property(x => x.State).HasColumnName("state");
             e.Property(x => x.IsManualOverride).HasColumnName("is_manual_override");
+            e.Property(x => x.IncludeInDashboard).HasColumnName("include_in_dashboard").HasDefaultValue(false);
+            e.Property(x => x.ExcludeFromDashboard).HasColumnName("exclude_from_dashboard").HasDefaultValue(false);
             e.Property(x => x.UserRating).HasColumnName("user_rating").HasColumnType("decimal(4,2)");
             e.Property(x => x.LastUpdated).HasColumnName("last_updated");
             e.HasOne(x => x.Profile).WithMany(p => p.WatchStates).HasForeignKey(x => x.ProfileId).OnDelete(DeleteBehavior.Cascade);
@@ -444,6 +462,126 @@ public class JellywatchDbContext : DbContext
             e.Property(x => x.LastRunStatus).HasColumnName("last_run_status").HasDefaultValue("never");
             e.Property(x => x.LastRunMessage).HasColumnName("last_run_message");
             e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => x.UserId).IsUnique();
+        });
+
+        // ── Watchlist ──
+        modelBuilder.Entity<Watchlist>(e =>
+        {
+            e.ToTable("watchlist");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.Name).HasColumnName("name").HasMaxLength(160);
+            e.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
+            e.Property(x => x.OwnerUserId).HasColumnName("owner_user_id");
+            e.Property(x => x.State).HasColumnName("state");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+            e.HasOne(x => x.OwnerUser).WithMany(u => u.OwnedWatchlists).HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => x.OwnerUserId);
+        });
+
+        // ── WatchlistMember ──
+        modelBuilder.Entity<WatchlistMember>(e =>
+        {
+            e.ToTable("watchlist_member");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.WatchlistId).HasColumnName("watchlist_id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.Role).HasColumnName("role");
+            e.Property(x => x.InvitedByUserId).HasColumnName("invited_by_user_id");
+            e.Property(x => x.CanAddItems).HasColumnName("can_add_items").HasDefaultValue(true);
+            e.Property(x => x.CanRemoveItems).HasColumnName("can_remove_items").HasDefaultValue(false);
+            e.Property(x => x.CanReorderItems).HasColumnName("can_reorder_items").HasDefaultValue(true);
+            e.Property(x => x.CanUpdateItemStatus).HasColumnName("can_update_item_status").HasDefaultValue(true);
+            e.Property(x => x.CanInviteMembers).HasColumnName("can_invite_members").HasDefaultValue(false);
+            e.Property(x => x.CanManageMembers).HasColumnName("can_manage_members").HasDefaultValue(false);
+            e.Property(x => x.CanUpdateWatchlist).HasColumnName("can_update_watchlist").HasDefaultValue(false);
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+            e.HasOne(x => x.Watchlist).WithMany(w => w.Members).HasForeignKey(x => x.WatchlistId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.User).WithMany(u => u.WatchlistMemberships).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.InvitedByUser).WithMany().HasForeignKey(x => x.InvitedByUserId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(x => new { x.WatchlistId, x.UserId }).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
+        // ── WatchlistItem ──
+        modelBuilder.Entity<WatchlistItem>(e =>
+        {
+            e.ToTable("watchlist_item");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.WatchlistId).HasColumnName("watchlist_id");
+            e.Property(x => x.ItemType).HasColumnName("item_type");
+            e.Property(x => x.MediaItemId).HasColumnName("media_item_id");
+            e.Property(x => x.ChildWatchlistId).HasColumnName("child_watchlist_id");
+            e.Property(x => x.Status).HasColumnName("status");
+            e.Property(x => x.Position).HasColumnName("position");
+            e.Property(x => x.AddedByUserId).HasColumnName("added_by_user_id");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+            e.HasOne(x => x.Watchlist).WithMany(w => w.Items).HasForeignKey(x => x.WatchlistId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.MediaItem).WithMany().HasForeignKey(x => x.MediaItemId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.ChildWatchlist).WithMany().HasForeignKey(x => x.ChildWatchlistId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(x => x.AddedByUser).WithMany().HasForeignKey(x => x.AddedByUserId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(x => new { x.WatchlistId, x.MediaItemId }).IsUnique().HasFilter("media_item_id IS NOT NULL");
+            e.HasIndex(x => new { x.WatchlistId, x.ChildWatchlistId }).IsUnique().HasFilter("child_watchlist_id IS NOT NULL");
+            e.HasIndex(x => new { x.WatchlistId, x.Position });
+        });
+
+        // ── WatchlistInvitation ──
+        modelBuilder.Entity<WatchlistInvitation>(e =>
+        {
+            e.ToTable("watchlist_invitation");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.WatchlistId).HasColumnName("watchlist_id");
+            e.Property(x => x.InvitedUserId).HasColumnName("invited_user_id");
+            e.Property(x => x.InvitedByUserId).HasColumnName("invited_by_user_id");
+            e.Property(x => x.Status).HasColumnName("status");
+            e.Property(x => x.Role).HasColumnName("role");
+            e.Property(x => x.CanAddItems).HasColumnName("can_add_items").HasDefaultValue(true);
+            e.Property(x => x.CanRemoveItems).HasColumnName("can_remove_items").HasDefaultValue(false);
+            e.Property(x => x.CanReorderItems).HasColumnName("can_reorder_items").HasDefaultValue(true);
+            e.Property(x => x.CanUpdateItemStatus).HasColumnName("can_update_item_status").HasDefaultValue(true);
+            e.Property(x => x.CanInviteMembers).HasColumnName("can_invite_members").HasDefaultValue(false);
+            e.Property(x => x.CanManageMembers).HasColumnName("can_manage_members").HasDefaultValue(false);
+            e.Property(x => x.CanUpdateWatchlist).HasColumnName("can_update_watchlist").HasDefaultValue(false);
+            e.Property(x => x.Message).HasColumnName("message").HasMaxLength(1000);
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.RespondedAt).HasColumnName("responded_at");
+            e.HasOne(x => x.Watchlist).WithMany(w => w.Invitations).HasForeignKey(x => x.WatchlistId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.InvitedUser).WithMany().HasForeignKey(x => x.InvitedUserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.InvitedByUser).WithMany().HasForeignKey(x => x.InvitedByUserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.WatchlistId, x.InvitedUserId, x.Status });
+        });
+
+        // ── WatchlistAccessRequest ──
+        modelBuilder.Entity<WatchlistAccessRequest>(e =>
+        {
+            e.ToTable("watchlist_access_request");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.WatchlistId).HasColumnName("watchlist_id");
+            e.Property(x => x.RequestingUserId).HasColumnName("requesting_user_id");
+            e.Property(x => x.Status).HasColumnName("status");
+            e.Property(x => x.Message).HasColumnName("message").HasMaxLength(1000);
+            e.Property(x => x.RespondedByUserId).HasColumnName("responded_by_user_id");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.RespondedAt).HasColumnName("responded_at");
+            e.HasOne(x => x.Watchlist).WithMany(w => w.AccessRequests).HasForeignKey(x => x.WatchlistId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.RequestingUser).WithMany().HasForeignKey(x => x.RequestingUserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.RespondedByUser).WithMany().HasForeignKey(x => x.RespondedByUserId).OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(x => new { x.WatchlistId, x.RequestingUserId, x.Status });
+        });
+
+        // ── UserWatchlistPreference ──
+        modelBuilder.Entity<UserWatchlistPreference>(e =>
+        {
+            e.ToTable("user_watchlist_preference");
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.DefaultWatchlistId).HasColumnName("default_watchlist_id");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+            e.HasOne(x => x.User).WithOne(u => u.WatchlistPreference).HasForeignKey<UserWatchlistPreference>(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.DefaultWatchlist).WithMany().HasForeignKey(x => x.DefaultWatchlistId).OnDelete(DeleteBehavior.SetNull);
             e.HasIndex(x => x.UserId).IsUnique();
         });
 

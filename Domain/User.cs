@@ -13,4 +13,7 @@ public class User
     public DateTime UpdatedAt { get; set; }
 
     public virtual ICollection<Profile> Profiles { get; set; } = new List<Profile>();
+    public virtual ICollection<Watchlist> OwnedWatchlists { get; set; } = new List<Watchlist>();
+    public virtual ICollection<WatchlistMember> WatchlistMemberships { get; set; } = new List<WatchlistMember>();
+    public virtual UserWatchlistPreference? WatchlistPreference { get; set; }
 }

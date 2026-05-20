@@ -102,6 +102,44 @@ public class SyncController : BaseApiController
         return Ok(new { message = $"Re-propagation complete.", propagated = count });
     }
 
+    [HttpPost("force-propagate-series/{seriesId:int}")]
+    public async Task<IActionResult> ForcePropagateSeriesFromParents(int seriesId, [FromQuery] int targetProfileId)
+    {
+        if (!CurrentUserId.HasValue) return Unauthorized();
+
+        var currentUser = await _context.Users.FindAsync(CurrentUserId.Value);
+        var targetProfile = await _context.Profiles.FindAsync(targetProfileId);
+        if (targetProfile is null) return NotFound(new { message = "Target profile not found." });
+        if (currentUser?.IsAdmin != true && targetProfile.UserId != CurrentUserId.Value) return Forbid();
+
+        var series = await _context.Series
+            .Include(s => s.Seasons)
+                .ThenInclude(sea => sea.Episodes)
+            .FirstOrDefaultAsync(s => s.Id == seriesId);
+        if (series is null) return NotFound(new { message = "Series not found." });
+
+        var sourceProfileIds = await _context.PropagationRules
+            .Where(r => r.IsActive && r.TargetProfileId == targetProfileId)
+            .Select(r => r.SourceProfileId)
+            .Distinct()
+            .ToListAsync();
+
+        if (sourceProfileIds.Count == 0)
+            return BadRequest(new { message = "This profile has no active parent propagation rules." });
+
+        var updated = 0;
+        foreach (var sourceProfileId in sourceProfileIds)
+            updated += await ForcePropagateSeriesAsync(sourceProfileId, targetProfileId, series);
+
+        await _context.SaveChangesAsync();
+        return Ok(new
+        {
+            message = $"Forced parent propagation updated {updated} episode states.",
+            updated,
+            sourceProfileCount = sourceProfileIds.Count
+        });
+    }
+
     [HttpGet("jobs")]
     public async Task<ActionResult<PagedResult<SyncJobDto>>> GetSyncJobs([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
@@ -261,14 +299,40 @@ public class SyncController : BaseApiController
             _logger.LogWarning(ex, "Could not fetch activity log for profile {ProfileId} — will use LastPlayedDate fallback", profileId);
         }
 
-        // Build lookup: (seasonNumber, episodeNumber) -> JellyfinItemInfo
-        var jellyfinEpLookup = jellyfinEpisodes
-            .Where(e => e.ParentIndexNumber.HasValue && e.IndexNumber.HasValue)
-            .GroupBy(e => (e.ParentIndexNumber!.Value, e.IndexNumber!.Value))
-            .ToDictionary(g => g.Key, g => g.First());
-
         var allEpisodes = series.Seasons.SelectMany(s => s.Episodes).ToList();
         var episodeIds = allEpisodes.Select(e => e.Id).ToList();
+        var localBySeasonEpisode = allEpisodes
+            .GroupBy(e => (e.Season.SeasonNumber, e.EpisodeNumber))
+            .ToDictionary(g => g.Key, g => g.First());
+        var localEpisodesOrdered = allEpisodes
+            .Where(e => e.Season.SeasonNumber > 0)
+            .OrderBy(e => e.Season.SeasonNumber)
+            .ThenBy(e => e.EpisodeNumber)
+            .ToList();
+        if (localEpisodesOrdered.Count == 0)
+        {
+            localEpisodesOrdered = allEpisodes
+                .OrderBy(e => e.Season.SeasonNumber)
+                .ThenBy(e => e.EpisodeNumber)
+                .ToList();
+        }
+
+        var jellyfinEpisodesOrdered = jellyfinEpisodes
+            .Where(e => e.ParentIndexNumber.HasValue && e.IndexNumber.HasValue && e.ParentIndexNumber.Value > 0)
+            .OrderBy(e => e.ParentIndexNumber!.Value)
+            .ThenBy(e => e.IndexNumber!.Value)
+            .ToList();
+        if (jellyfinEpisodesOrdered.Count == 0)
+        {
+            jellyfinEpisodesOrdered = jellyfinEpisodes
+                .Where(e => e.ParentIndexNumber.HasValue && e.IndexNumber.HasValue)
+                .OrderBy(e => e.ParentIndexNumber!.Value)
+                .ThenBy(e => e.IndexNumber!.Value)
+                .ToList();
+        }
+        var jellyfinOrdinalById = jellyfinEpisodesOrdered
+            .Select((episode, index) => new { episode.Id, index })
+            .ToDictionary(x => x.Id, x => x.index);
 
         // Load existing Finished WatchEvents for this profile/series
         var existingEvents = await _context.WatchEvents
@@ -288,64 +352,81 @@ public class SyncController : BaseApiController
 
         int updated = 0;
 
-        foreach (var season in series.Seasons)
+        foreach (var jellyfinEp in jellyfinEpisodesOrdered)
         {
-            foreach (var episode in season.Episodes)
+            if (jellyfinEp.UserData?.Played != true) continue;
+
+            Episode? episode = null;
+            if (jellyfinEp.ParentIndexNumber.HasValue && jellyfinEp.IndexNumber.HasValue)
             {
-                if (!jellyfinEpLookup.TryGetValue((season.SeasonNumber, episode.EpisodeNumber), out var jellyfinEp))
-                    continue;
-
-                // Jellyfin is the source of truth — only process episodes Jellyfin marks as played
-                if (jellyfinEp.UserData?.Played != true) continue;
-
-                var activityLogTime = stopTimes.TryGetValue(jellyfinEp.Id, out var aDate) ? aDate : (DateTime?)null;
-                var bestTimestamp = activityLogTime
-                    ?? jellyfinEp.UserData?.LastPlayedDate
-                    ?? DateTime.UtcNow;
-
-                // Upsert ProfileWatchState to Seen (Jellyfin is the source of truth here)
-                if (existingWatchStates.TryGetValue(episode.Id, out var watchState))
-                {
-                    if (watchState.State != WatchState.Seen)
-                    {
-                        watchState.State = WatchState.Seen;
-                        watchState.IsManualOverride = false;
-                        watchState.LastUpdated = DateTime.UtcNow;
-                    }
-                }
-                else
-                {
-                    _context.ProfileWatchStates.Add(new ProfileWatchState
-                    {
-                        ProfileId = profileId,
-                        MediaItemId = series.MediaItemId,
-                        EpisodeId = episode.Id,
-                        State = WatchState.Seen,
-                        IsManualOverride = false,
-                        LastUpdated = DateTime.UtcNow,
-                    });
-                }
-
-                if (eventsByEpisodeId.TryGetValue(episode.Id, out var existingEvent))
-                {
-                    existingEvent.Timestamp = bestTimestamp;
-                }
-                else
-                {
-                    _context.WatchEvents.Add(new WatchEvent
-                    {
-                        ProfileId = profileId,
-                        MediaItemId = series.MediaItemId,
-                        EpisodeId = episode.Id,
-                        JellyfinItemId = jellyfinEp.Id,
-                        EventType = WatchEventType.Finished,
-                        Source = SyncSource.Polling,
-                        Timestamp = bestTimestamp,
-                    });
-                }
-
-                updated++;
+                localBySeasonEpisode.TryGetValue((jellyfinEp.ParentIndexNumber.Value, jellyfinEp.IndexNumber.Value), out episode);
             }
+
+            if (episode is null
+                && jellyfinOrdinalById.TryGetValue(jellyfinEp.Id, out var ordinal)
+                && ordinal >= 0
+                && ordinal < localEpisodesOrdered.Count)
+            {
+                episode = localEpisodesOrdered[ordinal];
+                _logger.LogInformation(
+                    "Matched Jellyfin episode {JellyfinSeason}x{JellyfinEpisode} to local {LocalSeason}x{LocalEpisode} by absolute order for series {SeriesId}",
+                    jellyfinEp.ParentIndexNumber,
+                    jellyfinEp.IndexNumber,
+                    episode.Season.SeasonNumber,
+                    episode.EpisodeNumber,
+                    seriesId);
+            }
+
+            if (episode is null) continue;
+
+            var activityLogTime = stopTimes.TryGetValue(jellyfinEp.Id, out var aDate) ? aDate : (DateTime?)null;
+            var bestTimestamp = activityLogTime
+                ?? jellyfinEp.UserData?.LastPlayedDate
+                ?? DateTime.UtcNow;
+
+            // Upsert ProfileWatchState to Seen (Jellyfin is the source of truth here)
+            if (existingWatchStates.TryGetValue(episode.Id, out var watchState))
+            {
+                if (watchState.State != WatchState.Seen || watchState.IsManualOverride)
+                {
+                    watchState.State = WatchState.Seen;
+                    watchState.IsManualOverride = false;
+                    watchState.LastUpdated = DateTime.UtcNow;
+                }
+            }
+            else
+            {
+                _context.ProfileWatchStates.Add(new ProfileWatchState
+                {
+                    ProfileId = profileId,
+                    MediaItemId = series.MediaItemId,
+                    EpisodeId = episode.Id,
+                    State = WatchState.Seen,
+                    IsManualOverride = false,
+                    LastUpdated = DateTime.UtcNow,
+                });
+            }
+
+            if (eventsByEpisodeId.TryGetValue(episode.Id, out var existingEvent))
+            {
+                existingEvent.Timestamp = bestTimestamp;
+                existingEvent.JellyfinItemId = jellyfinEp.Id;
+            }
+            else
+            {
+                _context.WatchEvents.Add(new WatchEvent
+                {
+                    ProfileId = profileId,
+                    MediaItemId = series.MediaItemId,
+                    EpisodeId = episode.Id,
+                    JellyfinItemId = jellyfinEp.Id,
+                    EventType = WatchEventType.Finished,
+                    Source = SyncSource.Polling,
+                    Timestamp = bestTimestamp,
+                });
+            }
+
+            updated++;
         }
 
         await _context.SaveChangesAsync();
@@ -353,5 +434,106 @@ public class SyncController : BaseApiController
         _logger.LogInformation("Refreshed watch dates for {Updated} episodes of series {SeriesId} (profile {ProfileId})", updated, seriesId, profileId);
 
         return Ok(new { message = $"Watch dates refreshed for {updated} episodes.", updated });
+    }
+
+    private async Task<int> ForcePropagateSeriesAsync(int sourceProfileId, int targetProfileId, Series series)
+    {
+        var episodes = series.Seasons
+            .SelectMany(season => season.Episodes)
+            .ToList();
+        var episodeIds = episodes.Select(e => e.Id).ToList();
+
+        var sourceStates = await _context.ProfileWatchStates
+            .Where(ws => ws.ProfileId == sourceProfileId
+                && ws.EpisodeId.HasValue
+                && episodeIds.Contains(ws.EpisodeId.Value)
+                && ws.State != WatchState.Unseen)
+            .ToListAsync();
+
+        if (sourceStates.Count == 0) return 0;
+
+        var targetStates = await _context.ProfileWatchStates
+            .Where(ws => ws.ProfileId == targetProfileId
+                && ws.EpisodeId.HasValue
+                && episodeIds.Contains(ws.EpisodeId.Value))
+            .ToDictionaryAsync(ws => ws.EpisodeId!.Value, ws => ws);
+
+        var sourceFinishedEventRows = await _context.WatchEvents
+            .Where(e => e.ProfileId == sourceProfileId
+                && e.EpisodeId.HasValue
+                && episodeIds.Contains(e.EpisodeId.Value)
+                && e.EventType == WatchEventType.Finished)
+            .ToListAsync();
+
+        var sourceEventMap = sourceFinishedEventRows
+            .GroupBy(e => e.EpisodeId!.Value)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.Timestamp).First());
+        var targetFinishedEventRows = await _context.WatchEvents
+            .Where(e => e.ProfileId == targetProfileId
+                && e.EpisodeId.HasValue
+                && episodeIds.Contains(e.EpisodeId.Value)
+                && e.EventType == WatchEventType.Finished)
+            .ToListAsync();
+        var targetFinishedEvents = targetFinishedEventRows
+            .GroupBy(e => e.EpisodeId!.Value)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.Timestamp).First());
+
+        var updated = 0;
+        foreach (var sourceState in sourceStates)
+        {
+            var episodeId = sourceState.EpisodeId!.Value;
+            if (!targetStates.TryGetValue(episodeId, out var targetState))
+            {
+                targetState = new ProfileWatchState
+                {
+                    ProfileId = targetProfileId,
+                    MediaItemId = series.MediaItemId,
+                    EpisodeId = episodeId,
+                    State = sourceState.State,
+                    IsManualOverride = false,
+                    LastUpdated = DateTime.UtcNow
+                };
+                _context.ProfileWatchStates.Add(targetState);
+                targetStates[episodeId] = targetState;
+                updated++;
+            }
+            else if (targetState.State != sourceState.State || targetState.IsManualOverride)
+            {
+                targetState.State = sourceState.State;
+                targetState.IsManualOverride = false;
+                targetState.LastUpdated = DateTime.UtcNow;
+                updated++;
+            }
+
+            if (sourceState.State == WatchState.Seen && sourceEventMap.TryGetValue(episodeId, out var sourceEvent))
+            {
+                if (targetFinishedEvents.TryGetValue(episodeId, out var targetEvent))
+                {
+                    if (targetEvent.Timestamp != sourceEvent.Timestamp)
+                    {
+                        targetEvent.Timestamp = sourceEvent.Timestamp;
+                        targetEvent.Source = SyncSource.Manual;
+                        targetEvent.JellyfinItemId = sourceEvent.JellyfinItemId;
+                        updated++;
+                    }
+                }
+                else
+                {
+                    _context.WatchEvents.Add(new WatchEvent
+                    {
+                        ProfileId = targetProfileId,
+                        MediaItemId = series.MediaItemId,
+                        EpisodeId = episodeId,
+                        JellyfinItemId = sourceEvent.JellyfinItemId,
+                        EventType = WatchEventType.Finished,
+                        Source = SyncSource.Manual,
+                        Timestamp = sourceEvent.Timestamp
+                    });
+                    updated++;
+                }
+            }
+        }
+
+        return updated;
     }
 }

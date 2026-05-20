@@ -41,6 +41,9 @@ public class SeriesDetailDto
     public TranslationDto? SpanishTranslation { get; set; }
     public bool IsBlocked { get; set; }
     public bool IsInLibrary { get; set; }
+    public bool IncludeInDashboard { get; set; }
+    public bool ExcludeFromDashboard { get; set; }
+    public bool IsInDashboard { get; set; }
 }
 
 public class MovieListDto
@@ -133,6 +136,11 @@ public class WatchStateUpdateDto
 public class UserRatingDto
 {
     public decimal? Rating { get; set; }
+}
+
+public class DashboardPreferenceUpdateDto
+{
+    public bool IncludeInDashboard { get; set; }
 }
 
 public class ActivityDto

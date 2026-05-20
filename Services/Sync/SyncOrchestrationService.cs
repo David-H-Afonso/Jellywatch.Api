@@ -34,6 +34,23 @@ public class SyncOrchestrationService : ISyncOrchestrationService
 
     public async Task ProcessWatchEventAsync(int profileId, string jellyfinItemId, WatchEventType eventType, long positionTicks, SyncSource source)
     {
+        var profile = await _context.Profiles.FindAsync(profileId);
+        if (profile is null)
+        {
+            _logger.LogWarning("Skipping watch event for unknown profile {ProfileId}", profileId);
+            return;
+        }
+
+        JellyfinItemInfo? jellyfinItem = null;
+        try
+        {
+            jellyfinItem = await _jellyfinClient.GetItemAsync(jellyfinItemId, profile.JellyfinUserId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not fetch Jellyfin item {ItemId} while processing watch event", jellyfinItemId);
+        }
+
         // Find the matching local item
         var libraryItem = await _context.JellyfinLibraryItems
             .FirstOrDefaultAsync(li => li.JellyfinItemId == jellyfinItemId);
@@ -41,6 +58,15 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         int? mediaItemId = libraryItem?.MediaItemId;
         int? episodeId = null;
         int? movieId = null;
+
+        if (mediaItemId == null
+            && jellyfinItem?.Type == "Episode"
+            && !string.IsNullOrWhiteSpace(jellyfinItem.SeriesId))
+        {
+            var seriesLink = await _context.JellyfinLibraryItems
+                .FirstOrDefaultAsync(li => li.JellyfinItemId == jellyfinItem.SeriesId && li.MediaItemId != null);
+            mediaItemId = seriesLink?.MediaItemId;
+        }
 
         if (mediaItemId == null)
         {
@@ -55,15 +81,18 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             }
 
             // Queue for import if not found
+            var queueItemId = jellyfinItem?.Type == "Episode" && !string.IsNullOrWhiteSpace(jellyfinItem.SeriesId)
+                ? jellyfinItem.SeriesId
+                : jellyfinItemId;
             var existing = await _context.ImportQueueItems
-                .FirstOrDefaultAsync(q => q.JellyfinItemId == jellyfinItemId);
+                .FirstOrDefaultAsync(q => q.JellyfinItemId == queueItemId);
 
             if (existing == null)
             {
                 _context.ImportQueueItems.Add(new ImportQueueItem
                 {
-                    JellyfinItemId = jellyfinItemId,
-                    MediaType = MediaType.Series, // will be resolved during import
+                    JellyfinItemId = queueItemId,
+                    MediaType = jellyfinItem?.Type == "Movie" ? MediaType.Movie : MediaType.Series,
                     Priority = 1,
                     Status = ImportStatus.Pending,
                     RetryCount = 0,
@@ -71,7 +100,7 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 await _context.SaveChangesAsync();
             }
 
-            _logger.LogWarning("Jellyfin item {ItemId} not found locally, queued for import", jellyfinItemId);
+            _logger.LogWarning("Jellyfin item {ItemId} not found locally, queued {QueueItemId} for import", jellyfinItemId, queueItemId);
             return;
         }
 
@@ -86,15 +115,74 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         }
         else
         {
-            // For episodes, try to find via JellyfinItemId stored on the episode itself,
-            // or fall back to finding any episode under this series' MediaItem
+            if (jellyfinItem?.Type != "Episode"
+                || !jellyfinItem.ParentIndexNumber.HasValue
+                || !jellyfinItem.IndexNumber.HasValue)
+            {
+                _logger.LogWarning("Could not resolve episode metadata for Jellyfin item {ItemId}; skipping event", jellyfinItemId);
+                return;
+            }
+
             var episode = await _context.Episodes
                 .Include(e => e.Season)
-                .Where(e => e.Season.Series.MediaItemId == mediaItemId.Value)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(e =>
+                    e.Season.Series.MediaItemId == mediaItemId.Value
+                    && e.Season.SeasonNumber == jellyfinItem.ParentIndexNumber.Value
+                    && e.EpisodeNumber == jellyfinItem.IndexNumber.Value);
 
-            if (episode != null)
-                episodeId = episode.Id;
+            if (episode is null && !string.IsNullOrWhiteSpace(jellyfinItem.SeriesId))
+            {
+                try
+                {
+                    var jellyfinEpisodes = await _jellyfinClient.GetItemsAsync(
+                        profile.JellyfinUserId,
+                        parentId: jellyfinItem.SeriesId,
+                        itemTypes: "Episode");
+                    var orderedJellyfinEpisodes = jellyfinEpisodes
+                        .Where(e => e.ParentIndexNumber.HasValue && e.IndexNumber.HasValue && e.ParentIndexNumber.Value > 0)
+                        .OrderBy(e => e.ParentIndexNumber!.Value)
+                        .ThenBy(e => e.IndexNumber!.Value)
+                        .ToList();
+                    var ordinal = orderedJellyfinEpisodes.FindIndex(e => e.Id == jellyfinItem.Id);
+                    if (ordinal >= 0)
+                    {
+                        var orderedLocalEpisodes = await _context.Episodes
+                            .Include(e => e.Season)
+                            .Where(e => e.Season.Series.MediaItemId == mediaItemId.Value && e.Season.SeasonNumber > 0)
+                            .OrderBy(e => e.Season.SeasonNumber)
+                            .ThenBy(e => e.EpisodeNumber)
+                            .ToListAsync();
+                        if (ordinal < orderedLocalEpisodes.Count)
+                        {
+                            episode = orderedLocalEpisodes[ordinal];
+                            _logger.LogInformation(
+                                "Matched realtime Jellyfin episode {JellyfinSeason}x{JellyfinEpisode} to local {LocalSeason}x{LocalEpisode} by absolute order for media {MediaItemId}",
+                                jellyfinItem.ParentIndexNumber,
+                                jellyfinItem.IndexNumber,
+                                episode.Season.SeasonNumber,
+                                episode.EpisodeNumber,
+                                mediaItemId.Value);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not build absolute episode fallback for Jellyfin item {ItemId}", jellyfinItemId);
+                }
+            }
+
+            if (episode is null)
+            {
+                _logger.LogWarning(
+                    "Could not match Jellyfin episode {Season}x{Episode} ({ItemId}) to local media {MediaItemId}; skipping event",
+                    jellyfinItem.ParentIndexNumber,
+                    jellyfinItem.IndexNumber,
+                    jellyfinItemId,
+                    mediaItemId.Value);
+                return;
+            }
+
+            episodeId = episode.Id;
         }
 
         // Record the watch event; for Finished events, update an existing polling-created record
@@ -311,6 +399,21 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             _logger.LogInformation("Library '{LibName}' returned {ItemCount} {ItemType} items",
                 library.Name, items.Count, itemType);
 
+            var jellyfinEpisodeOrdinalBySeries = items
+                .Where(i => i.Type == "Episode"
+                    && !string.IsNullOrWhiteSpace(i.SeriesId)
+                    && i.ParentIndexNumber.HasValue
+                    && i.IndexNumber.HasValue
+                    && i.ParentIndexNumber.Value > 0)
+                .GroupBy(i => i.SeriesId!)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(i => i.ParentIndexNumber!.Value)
+                        .ThenBy(i => i.IndexNumber!.Value)
+                        .Select((episode, index) => new { episode.Id, index })
+                        .ToDictionary(x => x.Id, x => x.index));
+            var localEpisodeCache = new Dictionary<int, List<Episode>>();
+
             // Record all seen Jellyfin IDs (regardless of watch state) for reconciliation
             foreach (var i in items)
             {
@@ -348,10 +451,36 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                             attemptedSeriesImports.Add(item.SeriesId);
                             try
                             {
+                                var seriesName = item.SeriesName ?? "Unknown";
+                                int? tmdbId = null;
+                                string? imdbId = null;
+                                int? year = null;
+                                try
+                                {
+                                    var jellyfinSeries = await _jellyfinClient.GetItemAsync(item.SeriesId, profile.JellyfinUserId);
+                                    if (jellyfinSeries is not null)
+                                    {
+                                        seriesName = string.IsNullOrWhiteSpace(jellyfinSeries.Name) ? seriesName : jellyfinSeries.Name;
+                                        if (jellyfinSeries.ProviderIds is not null)
+                                        {
+                                            if (jellyfinSeries.ProviderIds.TryGetValue("Tmdb", out var tmdbStr) && int.TryParse(tmdbStr, out var parsedTmdb))
+                                                tmdbId = parsedTmdb;
+                                            if (jellyfinSeries.ProviderIds.TryGetValue("Imdb", out var imdbStr))
+                                                imdbId = imdbStr;
+                                        }
+                                        if (!string.IsNullOrWhiteSpace(jellyfinSeries.PremiereDate) && DateTime.TryParse(jellyfinSeries.PremiereDate, out var premiere))
+                                            year = premiere.Year;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Could not fetch Jellyfin series metadata for {SeriesId}; falling back to episode metadata", item.SeriesId);
+                                }
+
                                 _logger.LogInformation("Inline-importing series '{Name}' ({SeriesId}) during sync",
-                                    item.SeriesName ?? "Unknown", item.SeriesId);
+                                    seriesName, item.SeriesId);
                                 var mediaItem = await _metadata.ResolveSeriesAsync(
-                                    item.SeriesId, item.SeriesName ?? "Unknown");
+                                    item.SeriesId, seriesName, year, tmdbId, imdbId);
                                 if (mediaItem != null)
                                 {
                                     var series = await _context.Series
@@ -385,6 +514,44 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                             e.Season.Series.MediaItemId == seriesLink.MediaItemId.Value
                             && e.Season.SeasonNumber == item.ParentIndexNumber.Value
                             && e.EpisodeNumber == item.IndexNumber.Value);
+
+                    if (episode == null
+                        && jellyfinEpisodeOrdinalBySeries.TryGetValue(item.SeriesId, out var ordinalByItemId)
+                        && ordinalByItemId.TryGetValue(item.Id, out var ordinal))
+                    {
+                        if (!localEpisodeCache.TryGetValue(seriesLink.MediaItemId.Value, out var orderedLocalEpisodes))
+                        {
+                            orderedLocalEpisodes = await _context.Episodes
+                                .Include(e => e.Season)
+                                .Where(e => e.Season.Series.MediaItemId == seriesLink.MediaItemId.Value
+                                    && e.Season.SeasonNumber > 0)
+                                .OrderBy(e => e.Season.SeasonNumber)
+                                .ThenBy(e => e.EpisodeNumber)
+                                .ToListAsync();
+                            if (orderedLocalEpisodes.Count == 0)
+                            {
+                                orderedLocalEpisodes = await _context.Episodes
+                                    .Include(e => e.Season)
+                                    .Where(e => e.Season.Series.MediaItemId == seriesLink.MediaItemId.Value)
+                                    .OrderBy(e => e.Season.SeasonNumber)
+                                    .ThenBy(e => e.EpisodeNumber)
+                                    .ToListAsync();
+                            }
+                            localEpisodeCache[seriesLink.MediaItemId.Value] = orderedLocalEpisodes;
+                        }
+
+                        if (ordinal >= 0 && ordinal < orderedLocalEpisodes.Count)
+                        {
+                            episode = orderedLocalEpisodes[ordinal];
+                            _logger.LogInformation(
+                                "Matched Jellyfin episode {JellyfinSeason}x{JellyfinEpisode} to local {LocalSeason}x{LocalEpisode} by absolute order for media {MediaItemId}",
+                                item.ParentIndexNumber,
+                                item.IndexNumber,
+                                episode.Season.SeasonNumber,
+                                episode.EpisodeNumber,
+                                seriesLink.MediaItemId.Value);
+                        }
+                    }
 
                     if (episode == null)
                     {

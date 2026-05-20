@@ -171,6 +171,9 @@ public class SeriesController : BaseApiController
         List<ProfileWatchState> watchStates = new();
         List<ProfileWatchState> seasonRatings = new();
         decimal? userRating = null;
+        bool includeInDashboard = false;
+        bool excludeFromDashboard = false;
+        bool isInDashboard = false;
         Dictionary<int, DateTime?> episodeWatchedAt = new();
         if (profileId.HasValue)
         {
@@ -194,11 +197,24 @@ public class SeriesController : BaseApiController
                 .Where(ws => ws.ProfileId == profileId.Value && ws.SeasonId.HasValue && seasonIds.Contains(ws.SeasonId.Value))
                 .ToListAsync();
 
-            var seriesWs = await _context.ProfileWatchStates
-                .FirstOrDefaultAsync(ws => ws.ProfileId == profileId.Value
-                    && ws.MediaItemId == series.MediaItemId
-                    && ws.EpisodeId == null && ws.SeasonId == null && ws.MovieId == null);
+            var dashboardStates = await _context.ProfileWatchStates
+                .Where(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == series.MediaItemId)
+                .ToListAsync();
+            var seriesWs = dashboardStates.FirstOrDefault(ws =>
+                ws.EpisodeId == null && ws.SeasonId == null && ws.MovieId == null);
             userRating = seriesWs?.UserRating;
+            includeInDashboard = seriesWs?.IncludeInDashboard == true;
+            excludeFromDashboard = dashboardStates.Any(ws => ws.ExcludeFromDashboard);
+
+            var hasDashboardState = dashboardStates.Any(ws =>
+                ws.State == WatchState.InProgress || ws.State == WatchState.Seen || ws.IncludeInDashboard);
+            var hasWatchEvents = await _context.WatchEvents
+                .AnyAsync(e => e.ProfileId == profileId.Value
+                    && e.MediaItemId == series.MediaItemId
+                    && e.EpisodeId != null);
+            var hasWatchlistSignal = CurrentUserId.HasValue
+                && await IsSeriesIncludedByWatchlistAsync(CurrentUserId.Value, profileId.Value, series.MediaItemId);
+            isInDashboard = !excludeFromDashboard && (hasDashboardState || hasWatchEvents || hasWatchlistSignal);
         }
 
         var dto = new SeriesDetailDto
@@ -223,6 +239,9 @@ public class SeriesController : BaseApiController
                 .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == series.MediaItemId),
             IsInLibrary = !profileId.HasValue || await _context.ProfileWatchStates
                 .AnyAsync(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == series.MediaItemId),
+            IncludeInDashboard = includeInDashboard,
+            ExcludeFromDashboard = excludeFromDashboard,
+            IsInDashboard = isInDashboard,
             Ratings = series.MediaItem.ExternalRatings.Select(r => new ExternalRatingDto
             {
                 Provider = r.Provider,
@@ -236,7 +255,7 @@ public class SeriesController : BaseApiController
                 Name = sea.Name,
                 Overview = sea.Overview,
                 PosterPath = sea.PosterPath,
-                PosterUrl = sea.PosterPath != null ? $"https://image.tmdb.org/t/p/w342{sea.PosterPath}" : null,
+                PosterUrl = BuildTmdbImageUrl(sea.PosterPath, "w342"),
                 EpisodeCount = sea.EpisodeCount,
                 AirDate = sea.AirDate,
                 TmdbRating = sea.TmdbRating,
@@ -254,7 +273,7 @@ public class SeriesController : BaseApiController
                         Name = ep.Name,
                         Overview = ep.Overview,
                         StillPath = ep.StillPath,
-                        StillUrl = ep.StillPath != null ? $"https://image.tmdb.org/t/p/w300{ep.StillPath}" : null,
+                        StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
                         AirDate = ep.AirDate,
                         Runtime = ep.Runtime,
                         TmdbRating = ep.TmdbRating,
@@ -276,6 +295,70 @@ public class SeriesController : BaseApiController
         };
 
         return Ok(dto);
+    }
+
+    private async Task<bool> IsSeriesIncludedByWatchlistAsync(int userId, int profileId, int mediaItemId)
+    {
+        var isInProfile = await _context.ProfileWatchStates
+            .AnyAsync(ws => ws.ProfileId == profileId && ws.MediaItemId == mediaItemId);
+        if (!isInProfile) return false;
+
+        var isBlocked = await _context.ProfileMediaBlocks
+            .AnyAsync(b => b.ProfileId == profileId && b.MediaItemId == mediaItemId);
+        if (isBlocked) return false;
+
+        var rootWatchlistIds = await _context.WatchlistMembers
+            .Where(m => m.UserId == userId)
+            .Select(m => m.WatchlistId)
+            .Distinct()
+            .ToListAsync();
+
+        var visited = new HashSet<int>();
+        foreach (var watchlistId in rootWatchlistIds)
+        {
+            if (await WatchlistTreeContainsDashboardMediaAsync(watchlistId, mediaItemId, visited))
+                return true;
+        }
+
+        return false;
+    }
+
+    private async Task<bool> WatchlistTreeContainsDashboardMediaAsync(
+        int watchlistId,
+        int mediaItemId,
+        HashSet<int> visited)
+    {
+        if (!visited.Add(watchlistId)) return false;
+
+        var items = await _context.WatchlistItems
+            .Where(i => i.WatchlistId == watchlistId && i.Status != WatchlistStatus.Dropped)
+            .Select(i => new
+            {
+                i.ItemType,
+                i.MediaItemId,
+                i.ChildWatchlistId,
+                MediaType = i.MediaItem != null ? (MediaType?)i.MediaItem.MediaType : null
+            })
+            .ToListAsync();
+
+        foreach (var item in items)
+        {
+            if (item.ItemType == WatchlistItemType.MediaItem
+                && item.MediaItemId == mediaItemId
+                && item.MediaType == MediaType.Series)
+            {
+                return true;
+            }
+
+            if (item.ItemType == WatchlistItemType.Watchlist
+                && item.ChildWatchlistId.HasValue
+                && await WatchlistTreeContainsDashboardMediaAsync(item.ChildWatchlistId.Value, mediaItemId, visited))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     [HttpGet("{id:int}/seasons")]
@@ -306,7 +389,7 @@ public class SeriesController : BaseApiController
             Name = sea.Name,
             Overview = sea.Overview,
             PosterPath = sea.PosterPath,
-            PosterUrl = sea.PosterPath != null ? $"https://image.tmdb.org/t/p/w342{sea.PosterPath}" : null,
+            PosterUrl = BuildTmdbImageUrl(sea.PosterPath, "w342"),
             EpisodeCount = sea.EpisodeCount,
             AirDate = sea.AirDate,
             TmdbRating = sea.TmdbRating,
@@ -323,7 +406,7 @@ public class SeriesController : BaseApiController
                     Name = ep.Name,
                     Overview = ep.Overview,
                     StillPath = ep.StillPath,
-                    StillUrl = ep.StillPath != null ? $"https://image.tmdb.org/t/p/w300{ep.StillPath}" : null,
+                    StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
                     AirDate = ep.AirDate,
                     Runtime = ep.Runtime,
                     TmdbRating = ep.TmdbRating,
@@ -366,7 +449,7 @@ public class SeriesController : BaseApiController
                 Name = ep.Name,
                 Overview = ep.Overview,
                 StillPath = ep.StillPath,
-                StillUrl = ep.StillPath != null ? $"https://image.tmdb.org/t/p/w300{ep.StillPath}" : null,
+                StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
                 AirDate = ep.AirDate,
                 Runtime = ep.Runtime,
                 TmdbRating = ep.TmdbRating,
@@ -516,5 +599,15 @@ public class SeriesController : BaseApiController
             .ToList();
 
         return Ok(cast);
+    }
+
+    private static string? BuildTmdbImageUrl(string? path, string size)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return path;
+
+        return $"https://image.tmdb.org/t/p/{size}{path}";
     }
 }

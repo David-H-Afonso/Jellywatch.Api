@@ -12,6 +12,8 @@ public class ProfileWatchState
     public int? MovieId { get; set; }
     public WatchState State { get; set; } = WatchState.Unseen;
     public bool IsManualOverride { get; set; }
+    public bool IncludeInDashboard { get; set; }
+    public bool ExcludeFromDashboard { get; set; }
     public decimal? UserRating { get; set; }
     public DateTime LastUpdated { get; set; }
 

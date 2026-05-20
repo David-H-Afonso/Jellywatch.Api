@@ -520,6 +520,115 @@ public class ProfileController : BaseApiController
         return seriesIds.Count;
     }
 
+    [HttpPost("{profileId:int}/media/{mediaItemId:int}")]
+    public async Task<IActionResult> AddMediaToProfile(int profileId, int mediaItemId)
+    {
+        var profile = await _context.Profiles.FindAsync(profileId);
+        if (profile is null) return NotFound(new { message = "Profile not found" });
+        var isAdmin = (await _context.Users.FindAsync(CurrentUserId))?.IsAdmin == true;
+        if (!isAdmin && profile.UserId != CurrentUserId)
+            return Forbid();
+
+        var mediaItem = await _context.MediaItems
+            .Include(m => m.Series)
+            .Include(m => m.Movie)
+            .FirstOrDefaultAsync(m => m.Id == mediaItemId);
+        if (mediaItem is null) return NotFound(new { message = "Media not found" });
+
+        var block = await _context.ProfileMediaBlocks
+            .FirstOrDefaultAsync(b => b.ProfileId == profileId && b.MediaItemId == mediaItemId);
+        if (block is not null)
+            _context.ProfileMediaBlocks.Remove(block);
+
+        if (mediaItem.MediaType == MediaType.Series)
+        {
+            var exists = await _context.ProfileWatchStates.AnyAsync(ws =>
+                ws.ProfileId == profileId
+                && ws.MediaItemId == mediaItemId
+                && ws.EpisodeId == null
+                && ws.SeasonId == null
+                && ws.MovieId == null);
+
+            if (!exists)
+            {
+                _context.ProfileWatchStates.Add(new ProfileWatchState
+                {
+                    ProfileId = profileId,
+                    MediaItemId = mediaItemId,
+                    State = WatchState.Unseen,
+                    LastUpdated = DateTime.UtcNow
+                });
+            }
+        }
+        else
+        {
+            if (mediaItem.Movie is null) return NotFound(new { message = "Movie not found" });
+
+            var exists = await _context.ProfileWatchStates.AnyAsync(ws =>
+                ws.ProfileId == profileId
+                && ws.MediaItemId == mediaItemId
+                && ws.MovieId == mediaItem.Movie.Id);
+
+            if (!exists)
+            {
+                _context.ProfileWatchStates.Add(new ProfileWatchState
+                {
+                    ProfileId = profileId,
+                    MediaItemId = mediaItemId,
+                    MovieId = mediaItem.Movie.Id,
+                    State = WatchState.Unseen,
+                    LastUpdated = DateTime.UtcNow
+                });
+            }
+        }
+
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpPatch("{profileId:int}/series/{seriesId:int}/dashboard")]
+    public async Task<IActionResult> UpdateSeriesDashboardPreference(int profileId, int seriesId, [FromBody] DashboardPreferenceUpdateDto dto)
+    {
+        var profile = await _context.Profiles.FindAsync(profileId);
+        if (profile is null) return NotFound(new { message = "Profile not found" });
+        var isAdmin = (await _context.Users.FindAsync(CurrentUserId))?.IsAdmin == true;
+        if (!isAdmin && profile.UserId != CurrentUserId)
+            return Forbid();
+
+        var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == seriesId);
+        if (series is null) return NotFound(new { message = "Series not found" });
+
+        var watchState = await _context.ProfileWatchStates
+            .FirstOrDefaultAsync(ws => ws.ProfileId == profileId
+                && ws.MediaItemId == series.MediaItemId
+                && ws.EpisodeId == null
+                && ws.SeasonId == null
+                && ws.MovieId == null);
+
+        if (watchState is null)
+        {
+            watchState = new ProfileWatchState
+            {
+                ProfileId = profileId,
+                MediaItemId = series.MediaItemId,
+                State = WatchState.Unseen,
+                LastUpdated = DateTime.UtcNow
+            };
+            _context.ProfileWatchStates.Add(watchState);
+        }
+
+        watchState.IncludeInDashboard = dto.IncludeInDashboard;
+        watchState.ExcludeFromDashboard = !dto.IncludeInDashboard;
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            includeInDashboard = watchState.IncludeInDashboard,
+            excludeFromDashboard = watchState.ExcludeFromDashboard,
+            isInDashboard = watchState.IncludeInDashboard
+        });
+    }
+
     // ── Remove from profile list (any authenticated user, own profile) ─────────
 
     private async Task RemoveMediaFromProfileAsync(int profileId, int mediaItemId)

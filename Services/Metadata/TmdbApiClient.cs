@@ -47,7 +47,15 @@ public class TmdbApiClient : ITmdbApiClient
             url += $"&first_air_date_year={year.Value}";
 
         var response = await SendWithRetryAsync<TmdbSearchResponse<TmdbTvSearchResult>>(url);
-        return response?.Results ?? new List<TmdbTvSearchResult>();
+        if (response?.Results?.Count > 0 || IsEnglishLanguage(_settings.PrimaryLanguage))
+            return response?.Results ?? new List<TmdbTvSearchResult>();
+
+        var fallbackUrl = $"{BaseUrl}/search/tv?query={Uri.EscapeDataString(query)}&language=en-US";
+        if (year.HasValue)
+            fallbackUrl += $"&first_air_date_year={year.Value}";
+
+        var fallback = await SendWithRetryAsync<TmdbSearchResponse<TmdbTvSearchResult>>(fallbackUrl);
+        return fallback?.Results ?? new List<TmdbTvSearchResult>();
     }
 
     public async Task<List<TmdbMovieSearchResult>> SearchMovieAsync(string query, int? year = null)
@@ -57,7 +65,15 @@ public class TmdbApiClient : ITmdbApiClient
             url += $"&year={year.Value}";
 
         var response = await SendWithRetryAsync<TmdbSearchResponse<TmdbMovieSearchResult>>(url);
-        return response?.Results ?? new List<TmdbMovieSearchResult>();
+        if (response?.Results?.Count > 0 || IsEnglishLanguage(_settings.PrimaryLanguage))
+            return response?.Results ?? new List<TmdbMovieSearchResult>();
+
+        var fallbackUrl = $"{BaseUrl}/search/movie?query={Uri.EscapeDataString(query)}&language=en-US";
+        if (year.HasValue)
+            fallbackUrl += $"&year={year.Value}";
+
+        var fallback = await SendWithRetryAsync<TmdbSearchResponse<TmdbMovieSearchResult>>(fallbackUrl);
+        return fallback?.Results ?? new List<TmdbMovieSearchResult>();
     }
 
     public async Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false)
@@ -309,6 +325,9 @@ public class TmdbApiClient : ITmdbApiClient
         _logger.LogError("TMDB request failed after {MaxRetries} retries: {Url}", MaxRetries, url);
         return null;
     }
+
+    private static bool IsEnglishLanguage(string? language) =>
+        language?.StartsWith("en", StringComparison.OrdinalIgnoreCase) == true;
 
     private async Task<T?> GetCachedResponseAsync<T>(ExternalProvider provider, string externalId) where T : class
     {

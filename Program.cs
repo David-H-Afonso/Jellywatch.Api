@@ -336,6 +336,8 @@ using (var scope = app.Services.CreateScope())
                 ("episode", "TmdbRating", "REAL"),
                 ("season", "TmdbRating", "REAL"),
                 ("watch_event", "CreatedAt", "TEXT"),
+                ("profile_watch_state", "include_in_dashboard", "INTEGER"),
+                ("profile_watch_state", "exclude_from_dashboard", "INTEGER"),
             };
             foreach (var (table, column, colType) in newColumns)
             {

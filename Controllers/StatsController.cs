@@ -379,7 +379,7 @@ public class StatsController : BaseApiController
         // series-level states, season-level states, episode-level states, or watch events
         var seriesFromStates = await _context.ProfileWatchStates
             .Where(s => s.ProfileId == profileId
-                && (s.State == WatchState.InProgress || s.State == WatchState.Seen))
+                && (s.State == WatchState.InProgress || s.State == WatchState.Seen || s.IncludeInDashboard))
             .Select(s => s.MediaItemId)
             .Distinct()
             .ToListAsync();
@@ -390,8 +390,20 @@ public class StatsController : BaseApiController
             .Distinct()
             .ToListAsync();
 
+        var watchlistSeriesMediaItemIds = CurrentUserId.HasValue
+            ? await GetWatchlistSeriesForDashboardAsync(CurrentUserId.Value, profileId)
+            : new List<int>();
+
+        var excludedMediaItemIds = await _context.ProfileWatchStates
+            .Where(s => s.ProfileId == profileId && s.ExcludeFromDashboard)
+            .Select(s => s.MediaItemId)
+            .Distinct()
+            .ToListAsync();
+
         var watchedSeriesMediaItemIds = seriesFromStates
             .Union(seriesFromEvents)
+            .Union(watchlistSeriesMediaItemIds)
+            .Except(excludedMediaItemIds)
             .Distinct()
             .ToList();
 
@@ -437,5 +449,74 @@ public class StatsController : BaseApiController
             .ToList();
 
         return Ok(upcoming);
+    }
+
+    private async Task<List<int>> GetWatchlistSeriesForDashboardAsync(int userId, int profileId)
+    {
+        var profileMediaItemIds = await _context.ProfileWatchStates
+            .Where(ws => ws.ProfileId == profileId)
+            .Select(ws => ws.MediaItemId)
+            .Distinct()
+            .ToListAsync();
+
+        if (profileMediaItemIds.Count == 0) return new List<int>();
+
+        var blockedMediaItemIds = await _context.ProfileMediaBlocks
+            .Where(b => b.ProfileId == profileId)
+            .Select(b => b.MediaItemId)
+            .ToListAsync();
+
+        var blocked = blockedMediaItemIds.ToHashSet();
+        var profileMedia = profileMediaItemIds.ToHashSet();
+
+        var rootWatchlistIds = await _context.WatchlistMembers
+            .Where(m => m.UserId == userId)
+            .Select(m => m.WatchlistId)
+            .Distinct()
+            .ToListAsync();
+
+        var result = new HashSet<int>();
+        var visited = new HashSet<int>();
+
+        foreach (var watchlistId in rootWatchlistIds)
+            await CollectWatchlistSeriesForDashboardAsync(watchlistId, profileMedia, blocked, result, visited);
+
+        return result.ToList();
+    }
+
+    private async Task CollectWatchlistSeriesForDashboardAsync(
+        int watchlistId,
+        HashSet<int> profileMediaItemIds,
+        HashSet<int> blockedMediaItemIds,
+        HashSet<int> result,
+        HashSet<int> visited)
+    {
+        if (!visited.Add(watchlistId)) return;
+
+        var items = await _context.WatchlistItems
+            .Include(i => i.MediaItem)
+            .Where(i => i.WatchlistId == watchlistId && i.Status != WatchlistStatus.Dropped)
+            .ToListAsync();
+
+        foreach (var item in items)
+        {
+            if (item.ItemType == WatchlistItemType.MediaItem
+                && item.MediaItem is not null
+                && item.MediaItem.MediaType == MediaType.Series
+                && profileMediaItemIds.Contains(item.MediaItemId!.Value)
+                && !blockedMediaItemIds.Contains(item.MediaItemId!.Value))
+            {
+                result.Add(item.MediaItemId.Value);
+            }
+            else if (item.ItemType == WatchlistItemType.Watchlist && item.ChildWatchlistId.HasValue)
+            {
+                await CollectWatchlistSeriesForDashboardAsync(
+                    item.ChildWatchlistId.Value,
+                    profileMediaItemIds,
+                    blockedMediaItemIds,
+                    result,
+                    visited);
+            }
+        }
     }
 }
