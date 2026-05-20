@@ -409,6 +409,7 @@ static async Task RepairInitialSchemaDriftAsync(DbConnection connection, ILogger
     {
         await AddColumnIfMissingAsync(connection, table, column, definition, logger);
     }
+
 }
 
 static async Task RepairBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
@@ -522,6 +523,15 @@ static async Task EnsureBackupScheduleSchemaAsync(DbConnection connection, ILogg
         await AddColumnIfMissingAsync(connection, "backup_schedule", column, definition, logger);
     }
 
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "is_enabled", "0", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "backup_hour", "3", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "backup_minute", "0", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "destination_path", "'/backups'", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "file_name_prefix", "''", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "file_name_suffix", "''", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "retention_count", "7", logger);
+    await SetNullsToDefaultAsync(connection, "backup_schedule", "last_run_status", "'never'", logger);
+
     await ExecuteNonQueryAsync(connection, """CREATE UNIQUE INDEX IF NOT EXISTS "IX_backup_schedule_user_id" ON "backup_schedule" ("user_id")""");
 }
 
@@ -529,6 +539,8 @@ static async Task EnsureWatchlistSchemaAsync(DbConnection connection, ILogger lo
 {
     await AddColumnIfMissingAsync(connection, "profile_watch_state", "include_in_dashboard", "INTEGER NOT NULL DEFAULT 0", logger);
     await AddColumnIfMissingAsync(connection, "profile_watch_state", "exclude_from_dashboard", "INTEGER NOT NULL DEFAULT 0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "include_in_dashboard", "0", logger);
+    await SetNullsToDefaultAsync(connection, "profile_watch_state", "exclude_from_dashboard", "0", logger);
 
     await ExecuteNonQueryAsync(connection, """
         CREATE TABLE IF NOT EXISTS "watchlist" (
@@ -624,6 +636,15 @@ static async Task EnsureWatchlistSchemaAsync(DbConnection connection, ILogger lo
     await AddColumnIfMissingAsync(connection, "watchlist_invitation", "message", "TEXT", logger);
     await AddColumnIfMissingAsync(connection, "watchlist_invitation", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
     await AddColumnIfMissingAsync(connection, "watchlist_invitation", "responded_at", "TEXT", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "status", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "role", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_add_items", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_remove_items", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_reorder_items", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_update_item_status", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_invite_members", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_manage_members", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_invitation", "can_update_watchlist", "0", logger);
 
     await ExecuteNonQueryAsync(connection, """
         CREATE TABLE IF NOT EXISTS "watchlist_item" (
@@ -687,6 +708,14 @@ static async Task EnsureWatchlistSchemaAsync(DbConnection connection, ILogger lo
     await AddColumnIfMissingAsync(connection, "watchlist_member", "can_update_watchlist", "INTEGER NOT NULL DEFAULT 0", logger);
     await AddColumnIfMissingAsync(connection, "watchlist_member", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
     await AddColumnIfMissingAsync(connection, "watchlist_member", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "role", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_add_items", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_remove_items", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_reorder_items", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_update_item_status", "1", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_invite_members", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_manage_members", "0", logger);
+    await SetNullsToDefaultAsync(connection, "watchlist_member", "can_update_watchlist", "0", logger);
 
     await EnsureWatchlistIndexesAsync(connection);
 }
@@ -804,6 +833,26 @@ static async Task AddColumnIfMissingAsync(DbConnection connection, string tableN
         connection,
         $"ALTER TABLE {QuoteIdentifier(tableName)} ADD COLUMN {QuoteIdentifier(columnName)} {columnDefinition}");
     logger.LogInformation("Added missing column {Table}.{Column}", tableName, columnName);
+}
+
+static async Task SetNullsToDefaultAsync(DbConnection connection, string tableName, string columnName, string sqlDefaultValue, ILogger logger)
+{
+    if (!await TableExistsAsync(connection, tableName) || !await ColumnExistsAsync(connection, tableName, columnName))
+    {
+        return;
+    }
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"""
+        UPDATE {QuoteIdentifier(tableName)}
+        SET {QuoteIdentifier(columnName)} = {sqlDefaultValue}
+        WHERE {QuoteIdentifier(columnName)} IS NULL
+        """;
+    var updated = await command.ExecuteNonQueryAsync();
+    if (updated > 0)
+    {
+        logger.LogInformation("Backfilled {Count} NULL value(s) in {Table}.{Column}", updated, tableName, columnName);
+    }
 }
 
 static async Task<long> ExecuteScalarLongAsync(DbConnection connection, string sql)
