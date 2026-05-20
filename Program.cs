@@ -313,14 +313,46 @@ try
                 {
                     logger.LogInformation("Detected {Count} pre-squash migrations. Upgrading history table...", oldCount);
 
-                    // Wipe old entries and mark the squashed migration as already applied
-                    checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory";
+                    // Delete ONLY the old April pre-squash migrations, keeping newer ones intact
+                    checkCmd.CommandText = "DELETE FROM __EFMigrationsHistory WHERE MigrationId LIKE '202604%' AND MigrationId != '20260409132911_InitialCreate'";
                     await checkCmd.ExecuteNonQueryAsync();
 
-                    checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
-                    await checkCmd.ExecuteNonQueryAsync();
+                    // Mark the squashed migration as already applied if it isn't recorded yet
+                    checkCmd.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId = '20260409132911_InitialCreate'";
+                    var hasInitial = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
+                    if (!hasInitial)
+                    {
+                        checkCmd.CommandText = "INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('20260409132911_InitialCreate', '9.0.4')";
+                        await checkCmd.ExecuteNonQueryAsync();
+                    }
 
                     logger.LogInformation("Migration history upgraded to squashed InitialCreate.");
+                }
+
+                // Self-healing check for applied migrations:
+                // If a table exists in the database but its migration is not in the history table,
+                // insert it to prevent EF Core from trying to create it again and crashing.
+                var checkMigrations = new (string TableName, string MigrationId)[]
+                {
+                    ("backup_schedule", "20260506182748_AddBackupSchedule"),
+                    ("watchlist", "20260520095742_AddWatchlistsAndDashboardPreference")
+                };
+
+                foreach (var (tableName, migrationId) in checkMigrations)
+                {
+                    checkCmd.CommandText = $"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{tableName}'";
+                    var tableExists = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
+                    if (tableExists)
+                    {
+                        checkCmd.CommandText = $"SELECT COUNT(*) FROM __EFMigrationsHistory WHERE MigrationId = '{migrationId}'";
+                        var migrationRecorded = (long)(await checkCmd.ExecuteScalarAsync())! > 0;
+                        if (!migrationRecorded)
+                        {
+                            logger.LogInformation("Table '{Table}' exists but migration '{Migration}' is missing from history. Recording it as applied.", tableName, migrationId);
+                            checkCmd.CommandText = $"INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion) VALUES ('{migrationId}', '9.0.4')";
+                            await checkCmd.ExecuteNonQueryAsync();
+                        }
+                    }
                 }
 
                 // Always run on any existing DB — idempotent column/table additions.
