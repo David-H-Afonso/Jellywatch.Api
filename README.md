@@ -142,21 +142,27 @@ Configuration via `appsettings.json` or environment variables:
 
 ```
 Jellywatch.Api/
-├── Configuration/     # App settings models
+├── Application/
+│   ├── Interfaces/    # Service interfaces
+│   ├── Services/      # Business logic implementations
+│   └── ServiceResult.cs
+├── Common/            # Shared utilities and extensions
+├── Configuration/     # App settings models, DI registration
 ├── Contracts/         # DTOs (request/response models)
-├── Controllers/       # API endpoints
-├── Domain/            # Entity models
-├── Helpers/           # Utility classes
-├── Infrastructure/    # DbContext, EF configuration
-├── Middleware/        # JWT, error handling
-├── Migrations/        # EF Core migrations
-├── Services/
-│   ├── Assets/        # Image proxy & caching
-│   ├── Auth/          # JWT token service
-│   ├── Jellyfin/      # Jellyfin API client
-│   ├── Metadata/      # TMDB, TVMaze, OMDb clients
-│   └── Sync/          # Watch event orchestration
-└── Program.cs         # App entry point
+│   └── External/      # External API response models
+├── Controllers/       # API endpoints (MVC)
+├── Domain/
+│   ├── Entities/      # EF Core entity models
+│   └── Enums/         # Domain enumerations
+├── Infrastructure/
+│   ├── BackgroundJobs/     # Hosted services
+│   ├── ExternalServices/   # TMDB, TVMaze, OMDb, Jellyfin clients
+│   └── Persistence/
+│       ├── Configurations/ # IEntityTypeConfiguration classes
+│       └── JellywatchDbContext.cs
+├── Middleware/         # Error handling
+├── Migrations/         # EF Core migrations
+└── Program.cs          # App entry point
 ```
 
 ## License

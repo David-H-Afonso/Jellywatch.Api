@@ -1,614 +1,73 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Domain;
-using Jellywatch.Api.Domain.Enums;
-using Jellywatch.Api.Helpers;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Metadata;
+using Jellywatch.Api.Common;
 
 namespace Jellywatch.Api.Controllers;
 
 [Route("api/media/series")]
 public class SeriesController : BaseApiController
 {
-    private readonly JellywatchDbContext _context;
-    private readonly ITmdbApiClient _tmdbClient;
+    private readonly IMediaQueryService _mediaQueryService;
 
-    public SeriesController(JellywatchDbContext context, ITmdbApiClient tmdbClient)
+    public SeriesController(IMediaQueryService mediaQueryService)
     {
-        _context = context;
-        _tmdbClient = tmdbClient;
+        _mediaQueryService = mediaQueryService;
     }
 
     [HttpGet]
     public async Task<ActionResult<PagedResult<SeriesListDto>>> GetSeries([FromQuery] MediaQueryParameters query)
     {
-        var profileId = query.ProfileId;
-
-        var baseQuery = _context.Series
-            .Include(s => s.MediaItem)
-            .AsQueryable();
-
-        // Only show series that this profile has synced or manually added
-        if (profileId.HasValue)
-        {
-            baseQuery = baseQuery.Where(s =>
-                s.Seasons.Any(sea => sea.Episodes.Any(ep =>
-                    ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value))) ||
-                s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
-
-            // Exclude series blocked by this profile
-            baseQuery = baseQuery.Where(s =>
-                !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId.Value && b.MediaItemId == s.MediaItemId));
-        }
-
-        // Search filter
-        if (!string.IsNullOrWhiteSpace(query.Search))
-        {
-            var search = query.Search.ToLower();
-            baseQuery = baseQuery.Where(s =>
-                s.MediaItem.Title.ToLower().Contains(search) ||
-                (s.MediaItem.OriginalTitle != null && s.MediaItem.OriginalTitle.ToLower().Contains(search)));
-        }
-
-        var projected = baseQuery.Select(s => new SeriesListDto
-        {
-            Id = s.Id,
-            MediaItemId = s.MediaItemId,
-            Title = s.MediaItem.Title,
-            PosterPath = s.MediaItem.PosterPath,
-            Status = s.MediaItem.Status,
-            TotalSeasons = s.TotalSeasons,
-            TotalEpisodes = s.TotalEpisodes,
-            ReleaseDate = s.MediaItem.ReleaseDate,
-            EpisodesSeen = profileId.HasValue
-                ? s.Seasons.SelectMany(sea => sea.Episodes)
-                    .Count(ep => ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value && ws.State == WatchState.Seen))
-                : 0,
-            AggregateState = profileId.HasValue
-                ? (s.Seasons.SelectMany(sea => sea.Episodes).All(ep =>
-                    ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value
-                        && (ws.State == WatchState.Seen || ws.State == WatchState.WontWatch)))
-                    && s.Seasons.SelectMany(sea => sea.Episodes).Any()
-                    && s.Seasons.SelectMany(sea => sea.Episodes).Any(ep =>
-                        ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value && ws.State == WatchState.Seen))
-                    ? WatchState.Seen
-                    : s.Seasons.SelectMany(sea => sea.Episodes).Any(ep =>
-                        ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value
-                            && ws.State != WatchState.Unseen && ws.State != WatchState.WontWatch))
-                        ? WatchState.InProgress
-                        : WatchState.Unseen)
-                : WatchState.Unseen,
-            UserRating = profileId.HasValue
-                ? s.MediaItem.WatchStates.Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId == null && ws.MovieId == null)
-                    .Select(ws => ws.UserRating).FirstOrDefault()
-                : null,
-            TmdbRating = s.MediaItem.ExternalRatings
-                .Where(er => er.Provider == ExternalProvider.Tmdb)
-                .Select(er => er.Score != null ? (double?)Convert.ToDouble(er.Score) : null)
-                .FirstOrDefault()
-        });
-
-        // State filter
-        if (!string.IsNullOrWhiteSpace(query.State) && Enum.TryParse<WatchState>(query.State, true, out var stateFilter))
-        {
-            projected = projected.Where(s => s.AggregateState == stateFilter);
-        }
-
-        int totalCount;
-        List<SeriesListDto> data;
-
-        var sortKey = query.SortBy?.ToLower();
-        if (sortKey == "top" || sortKey == "grade")
-        {
-            var allData = await projected.ToListAsync();
-            totalCount = allData.Count;
-            IEnumerable<SeriesListDto> sorted = sortKey switch
-            {
-                "top" => query.SortDescending
-                    ? allData
-                        .OrderBy(s => s.UserRating.HasValue ? 0 : s.TmdbRating.HasValue ? 1 : 2)
-                        .ThenByDescending(s => s.UserRating ?? 0)
-                        .ThenByDescending(s => s.TmdbRating ?? 0)
-                        .ThenByDescending(s => s.ReleaseDate)
-                    : allData
-                        .OrderByDescending(s => s.UserRating.HasValue ? 0 : s.TmdbRating.HasValue ? 1 : 2)
-                        .ThenBy(s => s.UserRating ?? 0)
-                        .ThenBy(s => s.TmdbRating ?? 0)
-                        .ThenBy(s => s.ReleaseDate),
-                _ => query.SortDescending // grade
-                    ? allData
-                        .OrderBy(s => s.UserRating.HasValue ? 0 : 1)
-                        .ThenByDescending(s => s.UserRating ?? 0)
-                    : allData
-                        .OrderByDescending(s => s.UserRating.HasValue ? 0 : 1)
-                        .ThenBy(s => s.UserRating ?? 0),
-            };
-            data = sorted.Skip(query.Skip).Take(query.Take).ToList();
-        }
-        else
-        {
-            projected = query.SortBy?.ToLower() switch
-            {
-                "title" => query.SortDescending ? projected.OrderByDescending(s => s.Title) : projected.OrderBy(s => s.Title),
-                "release" => query.SortDescending ? projected.OrderByDescending(s => s.ReleaseDate) : projected.OrderBy(s => s.ReleaseDate),
-                _ => projected.OrderBy(s => s.Title)
-            };
-
-            totalCount = await projected.CountAsync();
-            data = await projected
-                .Skip(query.Skip)
-                .Take(query.Take)
-                .ToListAsync();
-        }
-
-        return Ok(new PagedResult<SeriesListDto>
-        {
-            Data = data,
-            TotalCount = totalCount,
-            Page = query.Page,
-            PageSize = query.PageSize
-        });
+        var result = await _mediaQueryService.GetSeriesAsync(query);
+        return ToActionResult(result);
     }
 
     [HttpGet("{id:int}")]
     public async Task<ActionResult<SeriesDetailDto>> GetSeriesDetail(int id, [FromQuery] int? profileId)
     {
-        var series = await _context.Series
-            .Include(s => s.MediaItem)
-                .ThenInclude(m => m.ExternalRatings)
-            .Include(s => s.MediaItem)
-                .ThenInclude(m => m.Translations)
-            .Include(s => s.Seasons.OrderBy(sea => sea.SeasonNumber))
-                .ThenInclude(sea => sea.Episodes.OrderBy(e => e.EpisodeNumber))
-            .FirstOrDefaultAsync(s => s.Id == id);
-
-        if (series is null)
-            return NotFound(new { message = "Series not found" });
-
-        // Load watch states for profile if specified
-        List<ProfileWatchState> watchStates = new();
-        List<ProfileWatchState> seasonRatings = new();
-        decimal? userRating = null;
-        bool includeInDashboard = false;
-        bool excludeFromDashboard = false;
-        bool isInDashboard = false;
-        Dictionary<int, DateTime?> episodeWatchedAt = new();
-        if (profileId.HasValue)
-        {
-            var episodeIds = series.Seasons.SelectMany(s => s.Episodes).Select(e => e.Id).ToList();
-            watchStates = await _context.ProfileWatchStates
-                .Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId.HasValue && episodeIds.Contains(ws.EpisodeId.Value))
-                .ToListAsync();
-
-            var watchedAtEntries = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId.Value
-                    && e.EpisodeId.HasValue
-                    && episodeIds.Contains(e.EpisodeId!.Value)
-                    && e.EventType == WatchEventType.Finished)
-                .GroupBy(e => e.EpisodeId!.Value)
-                .Select(g => new { EpisodeId = g.Key, WatchedAt = g.Max(e => e.Timestamp) })
-                .ToListAsync();
-            episodeWatchedAt = watchedAtEntries.ToDictionary(e => e.EpisodeId, e => (DateTime?)e.WatchedAt);
-
-            var seasonIds = series.Seasons.Select(s => s.Id).ToList();
-            seasonRatings = await _context.ProfileWatchStates
-                .Where(ws => ws.ProfileId == profileId.Value && ws.SeasonId.HasValue && seasonIds.Contains(ws.SeasonId.Value))
-                .ToListAsync();
-
-            var dashboardStates = await _context.ProfileWatchStates
-                .Where(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == series.MediaItemId)
-                .ToListAsync();
-            var seriesWs = dashboardStates.FirstOrDefault(ws =>
-                ws.EpisodeId == null && ws.SeasonId == null && ws.MovieId == null);
-            userRating = seriesWs?.UserRating;
-            includeInDashboard = seriesWs?.IncludeInDashboard == true;
-            excludeFromDashboard = dashboardStates.Any(ws => ws.ExcludeFromDashboard);
-
-            var hasDashboardState = dashboardStates.Any(ws =>
-                ws.State == WatchState.InProgress || ws.State == WatchState.Seen || ws.IncludeInDashboard);
-            var hasWatchEvents = await _context.WatchEvents
-                .AnyAsync(e => e.ProfileId == profileId.Value
-                    && e.MediaItemId == series.MediaItemId
-                    && e.EpisodeId != null);
-            var hasWatchlistSignal = CurrentUserId.HasValue
-                && await IsSeriesIncludedByWatchlistAsync(CurrentUserId.Value, profileId.Value, series.MediaItemId);
-            isInDashboard = !excludeFromDashboard && (hasDashboardState || hasWatchEvents || hasWatchlistSignal);
-        }
-
-        var dto = new SeriesDetailDto
-        {
-            Id = series.Id,
-            MediaItemId = series.MediaItemId,
-            TmdbId = series.MediaItem.TmdbId,
-            Title = series.MediaItem.Title,
-            OriginalTitle = series.MediaItem.OriginalTitle,
-            Overview = series.MediaItem.Overview,
-            PosterPath = series.MediaItem.PosterPath,
-            BackdropPath = series.MediaItem.BackdropPath,
-            ReleaseDate = series.MediaItem.ReleaseDate,
-            Status = series.MediaItem.Status,
-            OriginalLanguage = series.MediaItem.OriginalLanguage,
-            Network = series.Network,
-            TotalSeasons = series.TotalSeasons,
-            TotalEpisodes = series.TotalEpisodes,
-            Genres = series.MediaItem.Genres,
-            UserRating = userRating,
-            IsBlocked = profileId.HasValue && await _context.ProfileMediaBlocks
-                .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == series.MediaItemId),
-            IsInLibrary = !profileId.HasValue || await _context.ProfileWatchStates
-                .AnyAsync(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == series.MediaItemId),
-            IncludeInDashboard = includeInDashboard,
-            ExcludeFromDashboard = excludeFromDashboard,
-            IsInDashboard = isInDashboard,
-            Ratings = series.MediaItem.ExternalRatings.Select(r => new ExternalRatingDto
-            {
-                Provider = r.Provider,
-                Score = r.Score,
-                VoteCount = r.VoteCount
-            }).ToList(),
-            Seasons = series.Seasons.Select(sea => new SeasonDto
-            {
-                Id = sea.Id,
-                SeasonNumber = sea.SeasonNumber,
-                Name = sea.Name,
-                Overview = sea.Overview,
-                PosterPath = sea.PosterPath,
-                PosterUrl = BuildTmdbImageUrl(sea.PosterPath, "w342"),
-                EpisodeCount = sea.EpisodeCount,
-                AirDate = sea.AirDate,
-                TmdbRating = sea.TmdbRating,
-                EpisodesSeen = watchStates.Count(ws => ws.EpisodeId.HasValue
-                    && sea.Episodes.Any(e => e.Id == ws.EpisodeId.Value)
-                    && ws.State == WatchState.Seen),
-                UserRating = seasonRatings.FirstOrDefault(sr => sr.SeasonId == sea.Id)?.UserRating,
-                Episodes = sea.Episodes.Select(ep =>
-                {
-                    var ws = watchStates.FirstOrDefault(w => w.EpisodeId == ep.Id);
-                    return new EpisodeDto
-                    {
-                        Id = ep.Id,
-                        EpisodeNumber = ep.EpisodeNumber,
-                        Name = ep.Name,
-                        Overview = ep.Overview,
-                        StillPath = ep.StillPath,
-                        StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
-                        AirDate = ep.AirDate,
-                        Runtime = ep.Runtime,
-                        TmdbRating = ep.TmdbRating,
-                        State = ws?.State ?? WatchState.Unseen,
-                        IsManualOverride = ws?.IsManualOverride ?? false,
-                        UserRating = ws?.UserRating,
-                        WatchedAt = (ws?.State == WatchState.Seen || ws?.State == WatchState.WontWatch) ? episodeWatchedAt.GetValueOrDefault(ep.Id) : null
-                    };
-                }).ToList()
-            }).ToList(),
-            SpanishTranslation = series.MediaItem.Translations
-                .Where(t => !string.IsNullOrWhiteSpace(t.Language)
-                    && t.Language.StartsWith("es", StringComparison.OrdinalIgnoreCase))
-                .Select(t => new TranslationDto
-                {
-                    Language = t.Language,
-                    Title = t.Title,
-                    Overview = t.Overview
-                }).FirstOrDefault()
-        };
-
-        return Ok(dto);
-    }
-
-    private async Task<bool> IsSeriesIncludedByWatchlistAsync(int userId, int profileId, int mediaItemId)
-    {
-        var isInProfile = await _context.ProfileWatchStates
-            .AnyAsync(ws => ws.ProfileId == profileId && ws.MediaItemId == mediaItemId);
-        if (!isInProfile) return false;
-
-        var isBlocked = await _context.ProfileMediaBlocks
-            .AnyAsync(b => b.ProfileId == profileId && b.MediaItemId == mediaItemId);
-        if (isBlocked) return false;
-
-        var rootWatchlistIds = await _context.WatchlistMembers
-            .Where(m => m.UserId == userId)
-            .Select(m => m.WatchlistId)
-            .Distinct()
-            .ToListAsync();
-
-        var visited = new HashSet<int>();
-        foreach (var watchlistId in rootWatchlistIds)
-        {
-            if (await WatchlistTreeContainsDashboardMediaAsync(watchlistId, mediaItemId, visited))
-                return true;
-        }
-
-        return false;
-    }
-
-    private async Task<bool> WatchlistTreeContainsDashboardMediaAsync(
-        int watchlistId,
-        int mediaItemId,
-        HashSet<int> visited)
-    {
-        if (!visited.Add(watchlistId)) return false;
-
-        var items = await _context.WatchlistItems
-            .Where(i => i.WatchlistId == watchlistId && i.Status != WatchlistStatus.Dropped)
-            .Select(i => new
-            {
-                i.ItemType,
-                i.MediaItemId,
-                i.ChildWatchlistId,
-                MediaType = i.MediaItem != null ? (MediaType?)i.MediaItem.MediaType : null
-            })
-            .ToListAsync();
-
-        foreach (var item in items)
-        {
-            if (item.ItemType == WatchlistItemType.MediaItem
-                && item.MediaItemId == mediaItemId
-                && item.MediaType == MediaType.Series)
-            {
-                return true;
-            }
-
-            if (item.ItemType == WatchlistItemType.Watchlist
-                && item.ChildWatchlistId.HasValue
-                && await WatchlistTreeContainsDashboardMediaAsync(item.ChildWatchlistId.Value, mediaItemId, visited))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        var result = await _mediaQueryService.GetSeriesDetailAsync(id, profileId, CurrentUserId);
+        return ToActionResult(result);
     }
 
     [HttpGet("{id:int}/seasons")]
     public async Task<ActionResult<List<SeasonDto>>> GetSeasons(int id, [FromQuery] int? profileId)
     {
-        var seasons = await _context.Seasons
-            .Where(s => s.SeriesId == id)
-            .OrderBy(s => s.SeasonNumber)
-            .Include(s => s.Episodes.OrderBy(e => e.EpisodeNumber))
-            .ToListAsync();
-
-        if (seasons.Count == 0)
-            return NotFound(new { message = "Series not found or has no seasons" });
-
-        List<ProfileWatchState> watchStates = new();
-        if (profileId.HasValue)
-        {
-            var episodeIds = seasons.SelectMany(s => s.Episodes).Select(e => e.Id).ToList();
-            watchStates = await _context.ProfileWatchStates
-                .Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId.HasValue && episodeIds.Contains(ws.EpisodeId.Value))
-                .ToListAsync();
-        }
-
-        var dtos = seasons.Select(sea => new SeasonDto
-        {
-            Id = sea.Id,
-            SeasonNumber = sea.SeasonNumber,
-            Name = sea.Name,
-            Overview = sea.Overview,
-            PosterPath = sea.PosterPath,
-            PosterUrl = BuildTmdbImageUrl(sea.PosterPath, "w342"),
-            EpisodeCount = sea.EpisodeCount,
-            AirDate = sea.AirDate,
-            TmdbRating = sea.TmdbRating,
-            EpisodesSeen = watchStates.Count(ws => ws.EpisodeId.HasValue
-                && sea.Episodes.Any(e => e.Id == ws.EpisodeId.Value)
-                && ws.State == WatchState.Seen),
-            Episodes = sea.Episodes.Select(ep =>
-            {
-                var ws = watchStates.FirstOrDefault(w => w.EpisodeId == ep.Id);
-                return new EpisodeDto
-                {
-                    Id = ep.Id,
-                    EpisodeNumber = ep.EpisodeNumber,
-                    Name = ep.Name,
-                    Overview = ep.Overview,
-                    StillPath = ep.StillPath,
-                    StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
-                    AirDate = ep.AirDate,
-                    Runtime = ep.Runtime,
-                    TmdbRating = ep.TmdbRating,
-                    State = ws?.State ?? WatchState.Unseen,
-                    IsManualOverride = ws?.IsManualOverride ?? false
-                };
-            }).ToList()
-        }).ToList();
-
-        return Ok(dtos);
+        var result = await _mediaQueryService.GetSeasonsAsync(id, profileId);
+        return ToActionResult(result);
     }
 
     [HttpGet("seasons/{seasonId:int}/episodes")]
     public async Task<ActionResult<List<EpisodeDto>>> GetEpisodes(int seasonId, [FromQuery] int? profileId)
     {
-        var episodes = await _context.Episodes
-            .Where(e => e.SeasonId == seasonId)
-            .OrderBy(e => e.EpisodeNumber)
-            .ToListAsync();
-
-        if (episodes.Count == 0)
-            return NotFound(new { message = "Season not found or has no episodes" });
-
-        List<ProfileWatchState> watchStates = new();
-        if (profileId.HasValue)
-        {
-            var episodeIds = episodes.Select(e => e.Id).ToList();
-            watchStates = await _context.ProfileWatchStates
-                .Where(ws => ws.ProfileId == profileId.Value && ws.EpisodeId.HasValue && episodeIds.Contains(ws.EpisodeId.Value))
-                .ToListAsync();
-        }
-
-        var dtos = episodes.Select(ep =>
-        {
-            var ws = watchStates.FirstOrDefault(w => w.EpisodeId == ep.Id);
-            return new EpisodeDto
-            {
-                Id = ep.Id,
-                EpisodeNumber = ep.EpisodeNumber,
-                Name = ep.Name,
-                Overview = ep.Overview,
-                StillPath = ep.StillPath,
-                StillUrl = BuildTmdbImageUrl(ep.StillPath, "w300"),
-                AirDate = ep.AirDate,
-                Runtime = ep.Runtime,
-                TmdbRating = ep.TmdbRating,
-                State = ws?.State ?? WatchState.Unseen,
-                IsManualOverride = ws?.IsManualOverride ?? false
-            };
-        }).ToList();
-
-        return Ok(dtos);
+        var result = await _mediaQueryService.GetEpisodesAsync(seasonId, profileId);
+        return ToActionResult(result);
     }
 
     [HttpPatch("{id:int}/rating")]
     public async Task<IActionResult> RateSeries(int id, [FromQuery] int profileId, [FromBody] UserRatingDto dto)
     {
-        var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == id);
-        if (series is null) return NotFound(new { message = "Series not found" });
-
-        var ws = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(w => w.ProfileId == profileId
-                && w.MediaItemId == series.MediaItemId
-                && w.EpisodeId == null && w.SeasonId == null && w.MovieId == null);
-
-        if (ws is null)
-        {
-            ws = new ProfileWatchState
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                State = WatchState.Unseen,
-                UserRating = dto.Rating,
-                LastUpdated = DateTime.UtcNow
-            };
-            _context.ProfileWatchStates.Add(ws);
-        }
-        else
-        {
-            ws.UserRating = dto.Rating;
-        }
-
-        await _context.SaveChangesAsync();
-        return Ok(new { userRating = dto.Rating });
+        var result = await _mediaQueryService.RateSeriesAsync(id, profileId, dto);
+        return ToActionResult(result);
     }
 
     [HttpPatch("{id:int}/episodes/{episodeId:int}/rating")]
     public async Task<IActionResult> RateEpisode(int id, int episodeId, [FromQuery] int profileId, [FromBody] UserRatingDto dto)
     {
-        var episode = await _context.Episodes
-            .Include(e => e.Season)
-            .FirstOrDefaultAsync(e => e.Id == episodeId && e.Season.SeriesId == id);
-
-        if (episode is null) return NotFound(new { message = "Episode not found" });
-
-        var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == id);
-        if (series is null) return NotFound(new { message = "Series not found" });
-
-        var ws = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(w => w.ProfileId == profileId && w.EpisodeId == episodeId);
-
-        if (ws is null)
-        {
-            ws = new ProfileWatchState
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                EpisodeId = episodeId,
-                State = WatchState.Unseen,
-                UserRating = dto.Rating,
-                LastUpdated = DateTime.UtcNow
-            };
-            _context.ProfileWatchStates.Add(ws);
-        }
-        else
-        {
-            ws.UserRating = dto.Rating;
-        }
-
-        await _context.SaveChangesAsync();
-        return Ok(new { userRating = dto.Rating });
+        var result = await _mediaQueryService.RateEpisodeAsync(id, episodeId, profileId, dto);
+        return ToActionResult(result);
     }
 
     [HttpPatch("{id:int}/seasons/{seasonId:int}/rating")]
     public async Task<IActionResult> RateSeason(int id, int seasonId, [FromQuery] int profileId, [FromBody] UserRatingDto dto)
     {
-        var season = await _context.Seasons
-            .FirstOrDefaultAsync(s => s.Id == seasonId && s.SeriesId == id);
-
-        if (season is null) return NotFound(new { message = "Season not found" });
-
-        var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == id);
-        if (series is null) return NotFound(new { message = "Series not found" });
-
-        var ws = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(w => w.ProfileId == profileId
-                && w.MediaItemId == series.MediaItemId
-                && w.SeasonId == seasonId);
-
-        if (ws is null)
-        {
-            ws = new ProfileWatchState
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                SeasonId = seasonId,
-                State = WatchState.Unseen,
-                UserRating = dto.Rating,
-                LastUpdated = DateTime.UtcNow
-            };
-            _context.ProfileWatchStates.Add(ws);
-        }
-        else
-        {
-            ws.UserRating = dto.Rating;
-        }
-
-        await _context.SaveChangesAsync();
-        return Ok(new { userRating = dto.Rating });
+        var result = await _mediaQueryService.RateSeasonAsync(id, seasonId, profileId, dto);
+        return ToActionResult(result);
     }
 
     [HttpGet("{id:int}/credits")]
     public async Task<ActionResult<List<CastMemberDto>>> GetSeriesCredits(int id)
     {
-        var series = await _context.Series
-            .Include(s => s.MediaItem)
-            .FirstOrDefaultAsync(s => s.Id == id);
-
-        if (series is null)
-            return NotFound(new { message = "Series not found" });
-
-        if (!series.MediaItem.TmdbId.HasValue || !_tmdbClient.IsConfigured)
-            return Ok(new List<CastMemberDto>());
-
-        var credits = await _tmdbClient.GetTvAggregateCreditsAsync(series.MediaItem.TmdbId.Value);
-        if (credits?.Cast is null)
-            return Ok(new List<CastMemberDto>());
-
-        var cast = credits.Cast
-            .OrderBy(c => c.Order)
-            .Take(20)
-            .Select(c => new CastMemberDto
-            {
-                TmdbPersonId = c.Id,
-                Name = c.Name ?? "",
-                Character = c.Roles?.OrderByDescending(r => r.EpisodeCount).FirstOrDefault()?.Character,
-                ProfilePath = c.ProfilePath,
-                TotalEpisodeCount = c.TotalEpisodeCount,
-            })
-            .ToList();
-
-        return Ok(cast);
-    }
-
-    private static string? BuildTmdbImageUrl(string? path, string size)
-    {
-        if (string.IsNullOrWhiteSpace(path)) return null;
-        if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return path;
-
-        return $"https://image.tmdb.org/t/p/{size}{path}";
+        var result = await _mediaQueryService.GetSeriesCreditsAsync(id);
+        return ToActionResult(result);
     }
 }

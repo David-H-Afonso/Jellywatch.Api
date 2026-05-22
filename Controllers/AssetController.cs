@@ -2,8 +2,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Domain.Enums;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Assets;
+using Jellywatch.Api.Infrastructure.Persistence;
+using Jellywatch.Api.Application.Interfaces;
+using Jellywatch.Api.Application.Services;
 
 namespace Jellywatch.Api.Controllers;
 

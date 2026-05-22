@@ -1,11 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Domain;
+using Jellywatch.Api.Domain.Entities;
 using Jellywatch.Api.Domain.Enums;
-using Jellywatch.Api.Helpers;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Sync;
+using Jellywatch.Api.Common;
+using Jellywatch.Api.Infrastructure.Persistence;
+using Jellywatch.Api.Application.Services;
+using Jellywatch.Api.Infrastructure.BackgroundJobs;
 
 namespace Jellywatch.Api.Controllers;
 
@@ -14,11 +16,13 @@ public class ProfileController : BaseApiController
 {
     private readonly JellywatchDbContext _context;
     private readonly IPropagationService _propagationService;
+    private readonly IWatchStateService _watchStateService;
 
-    public ProfileController(JellywatchDbContext context, IPropagationService propagationService)
+    public ProfileController(JellywatchDbContext context, IPropagationService propagationService, IWatchStateService watchStateService)
     {
         _context = context;
         _propagationService = propagationService;
+        _watchStateService = watchStateService;
     }
 
     [HttpGet]
@@ -216,292 +220,33 @@ public class ProfileController : BaseApiController
     [HttpPatch("{profileId:int}/episodes/{episodeId:int}/state")]
     public async Task<IActionResult> UpdateEpisodeState(int profileId, int episodeId, [FromBody] WatchStateUpdateDto dto)
     {
-        var episode = await _context.Episodes
-            .Include(e => e.Season)
-            .FirstOrDefaultAsync(e => e.Id == episodeId);
-
-        if (episode is null)
-            return NotFound(new { message = "Episode not found" });
-
-        var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == episode.Season.SeriesId);
-        if (series is null)
-            return NotFound(new { message = "Series not found" });
-
-        var watchState = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(ws => ws.ProfileId == profileId && ws.EpisodeId == episodeId);
-
-        if (watchState is null)
-        {
-            watchState = new ProfileWatchState
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                EpisodeId = episodeId,
-                State = dto.State,
-                IsManualOverride = true,
-                LastUpdated = DateTime.UtcNow
-            };
-            _context.ProfileWatchStates.Add(watchState);
-        }
-        else
-        {
-            watchState.State = dto.State;
-            watchState.IsManualOverride = true;
-            watchState.LastUpdated = DateTime.UtcNow;
-        }
-
-        await _context.SaveChangesAsync();
-
-        if (dto.State == WatchState.Seen)
-        {
-            _context.WatchEvents.Add(new WatchEvent
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                EpisodeId = episodeId,
-                EventType = WatchEventType.Finished,
-                Source = SyncSource.Manual,
-                Timestamp = dto.Timestamp?.ToUniversalTime() ?? DateTime.UtcNow
-            });
-            await _context.SaveChangesAsync();
-        }
-        else if (dto.State == WatchState.Unseen)
-        {
-            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
-            var manualEvents = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId
-                    && e.EpisodeId == episodeId
-                    && e.EventType == WatchEventType.Finished
-                    && e.Source == SyncSource.Manual)
-                .ToListAsync();
-            if (manualEvents.Count > 0)
-            {
-                _context.WatchEvents.RemoveRange(manualEvents);
-                await _context.SaveChangesAsync();
-            }
-        }
-
-        // Propagate if this profile is a joint profile
-        await _propagationService.PropagateStateChangeAsync(profileId, series.MediaItemId, episodeId, null, dto.State, dto.Timestamp?.ToUniversalTime());
-
-        return Ok(new { message = "Episode state updated", state = dto.State.ToString() });
+        var (success, message, error) = await _watchStateService.UpdateEpisodeStateAsync(profileId, episodeId, dto);
+        if (!success) return NotFound(new { message = error });
+        return Ok(new { message, state = dto.State.ToString() });
     }
 
     [HttpPatch("{profileId:int}/movies/{movieId:int}/state")]
     public async Task<IActionResult> UpdateMovieState(int profileId, int movieId, [FromBody] WatchStateUpdateDto dto)
     {
-        var movie = await _context.Movies.FindAsync(movieId);
-        if (movie is null)
-            return NotFound(new { message = "Movie not found" });
-
-        var watchState = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(ws => ws.ProfileId == profileId && ws.MovieId == movieId);
-
-        if (watchState is null)
-        {
-            watchState = new ProfileWatchState
-            {
-                ProfileId = profileId,
-                MediaItemId = movie.MediaItemId,
-                MovieId = movieId,
-                State = dto.State,
-                IsManualOverride = true,
-                LastUpdated = DateTime.UtcNow
-            };
-            _context.ProfileWatchStates.Add(watchState);
-        }
-        else
-        {
-            watchState.State = dto.State;
-            watchState.IsManualOverride = true;
-            watchState.LastUpdated = DateTime.UtcNow;
-        }
-
-        await _context.SaveChangesAsync();
-
-        if (dto.State == WatchState.Seen)
-        {
-            _context.WatchEvents.Add(new WatchEvent
-            {
-                ProfileId = profileId,
-                MediaItemId = movie.MediaItemId,
-                MovieId = movieId,
-                EventType = WatchEventType.Finished,
-                Source = SyncSource.Manual,
-                Timestamp = dto.Timestamp?.ToUniversalTime() ?? DateTime.UtcNow
-            });
-            await _context.SaveChangesAsync();
-        }
-        else if (dto.State == WatchState.Unseen)
-        {
-            var lastFinished = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId && e.MovieId == movieId && e.EventType == WatchEventType.Finished)
-                .OrderByDescending(e => e.Timestamp)
-                .FirstOrDefaultAsync();
-            if (lastFinished != null)
-            {
-                _context.WatchEvents.Remove(lastFinished);
-                await _context.SaveChangesAsync();
-            }
-        }
-
-        await _propagationService.PropagateStateChangeAsync(profileId, movie.MediaItemId, null, movieId, dto.State, dto.Timestamp?.ToUniversalTime());
-
-        return Ok(new { message = "Movie state updated", state = dto.State.ToString() });
+        var (success, message, error) = await _watchStateService.UpdateMovieStateAsync(profileId, movieId, dto);
+        if (!success) return NotFound(new { message = error });
+        return Ok(new { message, state = dto.State.ToString() });
     }
 
     [HttpPatch("{profileId:int}/seasons/{seasonId:int}/state")]
     public async Task<IActionResult> UpdateSeasonState(int profileId, int seasonId, [FromBody] WatchStateUpdateDto dto)
     {
-        var season = await _context.Seasons
-            .Include(s => s.Episodes)
-            .Include(s => s.Series)
-            .FirstOrDefaultAsync(s => s.Id == seasonId);
-
-        if (season == null)
-            return NotFound(new { message = "Season not found" });
-
-        foreach (var episode in season.Episodes)
-        {
-            var ws = await _context.ProfileWatchStates
-                .FirstOrDefaultAsync(s => s.ProfileId == profileId && s.EpisodeId == episode.Id);
-
-            if (ws == null)
-            {
-                _context.ProfileWatchStates.Add(new ProfileWatchState
-                {
-                    ProfileId = profileId,
-                    MediaItemId = season.Series.MediaItemId,
-                    EpisodeId = episode.Id,
-                    State = dto.State,
-                    IsManualOverride = true,
-                    LastUpdated = DateTime.UtcNow,
-                });
-            }
-            else
-            {
-                ws.State = dto.State;
-                ws.IsManualOverride = true;
-                ws.LastUpdated = DateTime.UtcNow;
-            }
-        }
-
-        await _context.SaveChangesAsync();
-
-        if (dto.State == WatchState.Seen)
-        {
-            var watchEvents = season.Episodes.Select(ep => new WatchEvent
-            {
-                ProfileId = profileId,
-                MediaItemId = season.Series.MediaItemId,
-                EpisodeId = ep.Id,
-                EventType = WatchEventType.Finished,
-                Source = SyncSource.Manual,
-                Timestamp = dto.Timestamp?.ToUniversalTime() ?? DateTime.UtcNow
-            });
-            _context.WatchEvents.AddRange(watchEvents);
-            await _context.SaveChangesAsync();
-        }
-        else if (dto.State == WatchState.Unseen)
-        {
-            var episodeIds = season.Episodes.Select(ep => ep.Id).ToList();
-            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
-            var manualEvents = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId
-                    && e.EpisodeId.HasValue
-                    && episodeIds.Contains(e.EpisodeId.Value)
-                    && e.EventType == WatchEventType.Finished
-                    && e.Source == SyncSource.Manual)
-                .ToListAsync();
-            if (manualEvents.Count > 0)
-            {
-                _context.WatchEvents.RemoveRange(manualEvents);
-                await _context.SaveChangesAsync();
-            }
-        }
-
-        foreach (var episode in season.Episodes)
-            await _propagationService.PropagateStateChangeAsync(profileId, season.Series.MediaItemId, episode.Id, null, dto.State, dto.Timestamp?.ToUniversalTime());
-
-        return Ok(new { message = $"Season {seasonId} state updated to {dto.State}" });
+        var (success, message, error) = await _watchStateService.UpdateSeasonStateAsync(profileId, seasonId, dto);
+        if (!success) return NotFound(new { message = error });
+        return Ok(new { message });
     }
 
     [HttpPatch("{profileId:int}/series/{seriesId:int}/state")]
     public async Task<IActionResult> UpdateSeriesState(int profileId, int seriesId, [FromBody] WatchStateUpdateDto dto)
     {
-        var series = await _context.Series
-            .Include(s => s.Seasons)
-                .ThenInclude(se => se.Episodes)
-            .FirstOrDefaultAsync(s => s.Id == seriesId);
-
-        if (series == null)
-            return NotFound(new { message = "Series not found" });
-
-        var allEpisodes = series.Seasons.SelectMany(s => s.Episodes).ToList();
-
-        foreach (var episode in allEpisodes)
-        {
-            var ws = await _context.ProfileWatchStates
-                .FirstOrDefaultAsync(s => s.ProfileId == profileId && s.EpisodeId == episode.Id);
-
-            if (ws == null)
-            {
-                _context.ProfileWatchStates.Add(new ProfileWatchState
-                {
-                    ProfileId = profileId,
-                    MediaItemId = series.MediaItemId,
-                    EpisodeId = episode.Id,
-                    State = dto.State,
-                    IsManualOverride = true,
-                    LastUpdated = DateTime.UtcNow,
-                });
-            }
-            else
-            {
-                ws.State = dto.State;
-                ws.IsManualOverride = true;
-                ws.LastUpdated = DateTime.UtcNow;
-            }
-        }
-
-        await _context.SaveChangesAsync();
-
-        if (dto.State == WatchState.Seen)
-        {
-            var watchEvents = allEpisodes.Select(ep => new WatchEvent
-            {
-                ProfileId = profileId,
-                MediaItemId = series.MediaItemId,
-                EpisodeId = ep.Id,
-                EventType = WatchEventType.Finished,
-                Source = SyncSource.Manual,
-                Timestamp = dto.Timestamp?.ToUniversalTime() ?? DateTime.UtcNow
-            });
-            _context.WatchEvents.AddRange(watchEvents);
-            await _context.SaveChangesAsync();
-        }
-        else if (dto.State == WatchState.Unseen)
-        {
-            var episodeIds = allEpisodes.Select(ep => ep.Id).ToList();
-            // Remove all manually-created WatchEvents; preserve Jellyfin/webhook history for Stats/Wrapped
-            var manualEvents = await _context.WatchEvents
-                .Where(e => e.ProfileId == profileId
-                    && e.EpisodeId.HasValue
-                    && episodeIds.Contains(e.EpisodeId.Value)
-                    && e.EventType == WatchEventType.Finished
-                    && e.Source == SyncSource.Manual)
-                .ToListAsync();
-            if (manualEvents.Count > 0)
-            {
-                _context.WatchEvents.RemoveRange(manualEvents);
-                await _context.SaveChangesAsync();
-            }
-        }
-
-        foreach (var episode in allEpisodes)
-            await _propagationService.PropagateStateChangeAsync(profileId, series.MediaItemId, episode.Id, null, dto.State, dto.Timestamp?.ToUniversalTime());
-
-        return Ok(new { message = $"All episodes for series {seriesId} set to {dto.State}" });
+        var (success, message, error) = await _watchStateService.UpdateSeriesStateAsync(profileId, seriesId, dto);
+        if (!success) return NotFound(new { message = error });
+        return Ok(new { message });
     }
 
     private async Task<int> CountCompletedSeriesAsync(int profileId)
@@ -629,8 +374,6 @@ public class ProfileController : BaseApiController
         });
     }
 
-    // ── Remove from profile list (any authenticated user, own profile) ─────────
-
     private async Task RemoveMediaFromProfileAsync(int profileId, int mediaItemId)
     {
         var watchStates = await _context.ProfileWatchStates
@@ -680,7 +423,7 @@ public class ProfileController : BaseApiController
             .FirstOrDefaultAsync(b => b.ProfileId == profileId && b.MediaItemId == mediaItemId);
         if (existing is null)
         {
-            _context.ProfileMediaBlocks.Add(new Domain.ProfileMediaBlock
+            _context.ProfileMediaBlocks.Add(new Domain.Entities.ProfileMediaBlock
             {
                 ProfileId = profileId,
                 MediaItemId = mediaItemId,

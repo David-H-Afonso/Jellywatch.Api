@@ -1,0 +1,19 @@
+namespace Jellywatch.Api.Domain.Entities;
+
+public class User
+{
+    public int Id { get; set; }
+    public string JellyfinUserId { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public bool IsAdmin { get; set; }
+    public string? AvatarUrl { get; set; }
+    public string? JellyfinServerUrl { get; set; }
+    public string PreferredLanguage { get; set; } = "en";
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+
+    public virtual ICollection<Profile> Profiles { get; set; } = new List<Profile>();
+    public virtual ICollection<Watchlist> OwnedWatchlists { get; set; } = new List<Watchlist>();
+    public virtual ICollection<WatchlistMember> WatchlistMemberships { get; set; } = new List<WatchlistMember>();
+    public virtual UserWatchlistPreference? WatchlistPreference { get; set; }
+}

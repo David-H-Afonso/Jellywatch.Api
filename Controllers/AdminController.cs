@@ -1,587 +1,171 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
-using Jellywatch.Api.Configuration;
+using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Domain;
-using Jellywatch.Api.Helpers;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Jellyfin;
-using Jellywatch.Api.Services.Metadata;
+using Jellywatch.Api.Common;
 
 namespace Jellywatch.Api.Controllers;
 
 [Route("api/[controller]")]
 public class AdminController : BaseApiController
 {
-    private readonly JellywatchDbContext _context;
-    private readonly IMetadataResolutionService _metadataService;
-    private readonly IJellyfinApiClient _jellyfinClient;
-    private readonly JellyfinSettings _jellyfinSettings;
+    private readonly IAdminService _adminService;
 
-    public AdminController(JellywatchDbContext context, IMetadataResolutionService metadataService, IJellyfinApiClient jellyfinClient, IOptions<JellyfinSettings> jellyfinSettings)
+    public AdminController(IAdminService adminService)
     {
-        _context = context;
-        _metadataService = metadataService;
-        _jellyfinClient = jellyfinClient;
-        _jellyfinSettings = jellyfinSettings.Value;
+        _adminService = adminService;
     }
-
-    private async Task<bool> IsAdminAsync() =>
-        (await _context.Users.FindAsync(CurrentUserId))?.IsAdmin == true;
-
-    // ── Users ────────────────────────────────────────────────────────────────
 
     [HttpGet("users")]
     public async Task<ActionResult<List<UserDto>>> GetUsers()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var users = await _context.Users
-            .OrderBy(u => u.Username)
-            .Select(u => new UserDto
-            {
-                Id = u.Id,
-                Username = u.Username,
-                JellyfinUserId = u.JellyfinUserId,
-                IsAdmin = u.IsAdmin,
-                AvatarUrl = u.AvatarUrl,
-                PreferredLanguage = u.PreferredLanguage,
-                CreatedAt = u.CreatedAt
-            })
-            .ToListAsync();
-
-        return Ok(users);
+        var result = await _adminService.GetUsersAsync(CurrentUserId);
+        return ToActionResult(result);
     }
 
     [HttpDelete("users/{id:int}")]
     public async Task<IActionResult> DeleteUser(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        if (id == CurrentUserId)
-            return BadRequest(new { message = "Cannot delete your own user account." });
-
-        var user = await _context.Users.FindAsync(id);
-        if (user is null) return NotFound(new { message = "User not found" });
-
-        _context.Users.Remove(user);
-        await _context.SaveChangesAsync();
-
-        return Ok(new { message = $"User \"{user.Username}\" deleted." });
+        var result = await _adminService.DeleteUserAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
 
     [HttpGet("profiles")]
     public async Task<ActionResult<List<ProfileDto>>> GetAllProfiles()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var profiles = await _context.Profiles
-            .OrderBy(p => p.DisplayName)
-            .Select(p => new ProfileDto
-            {
-                Id = p.Id,
-                DisplayName = p.DisplayName,
-                JellyfinUserId = p.JellyfinUserId,
-                IsJoint = p.IsJoint,
-                UserId = p.UserId,
-                CreatedAt = p.CreatedAt
-            })
-            .ToListAsync();
-
-        return Ok(profiles);
+        var result = await _adminService.GetAllProfilesAsync(CurrentUserId);
+        return ToActionResult(result);
     }
-
-    // ── Jellyfin Users (for adding profiles without login) ───────────────────
 
     [HttpGet("jellyfin-users")]
     public async Task<IActionResult> GetJellyfinUsers()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var jellyfinUsers = await _jellyfinClient.GetUsersAsync();
-        var existingJellyfinIds = await _context.Profiles
-            .Select(p => p.JellyfinUserId)
-            .ToListAsync();
-
-        var result = jellyfinUsers.Select(u => new
-        {
-            u.Id,
-            u.Name,
-            u.IsAdministrator,
-            AlreadyTracked = existingJellyfinIds.Contains(u.Id)
-        });
-
-        return Ok(result);
+        var result = await _adminService.GetJellyfinUsersAsync(CurrentUserId);
+        return ToActionResult(result);
     }
 
     [HttpPost("add-profile")]
     public async Task<IActionResult> AddProfileFromJellyfin([FromBody] AddProfileRequest request)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        if (string.IsNullOrWhiteSpace(request.JellyfinUserId) || string.IsNullOrWhiteSpace(request.DisplayName))
-            return BadRequest(new { message = "JellyfinUserId and DisplayName are required." });
-
-        var exists = await _context.Profiles
-            .AnyAsync(p => p.JellyfinUserId == request.JellyfinUserId);
-
-        if (exists)
-            return Conflict(new { message = "A profile for this Jellyfin user already exists." });
-
-        var profile = new Profile
-        {
-            JellyfinUserId = request.JellyfinUserId,
-            DisplayName = request.DisplayName,
-            IsJoint = false,
-            UserId = null
-        };
-
-        _context.Profiles.Add(profile);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ProfileDto
-        {
-            Id = profile.Id,
-            DisplayName = profile.DisplayName,
-            JellyfinUserId = profile.JellyfinUserId,
-            IsJoint = profile.IsJoint,
-            UserId = profile.UserId,
-            CreatedAt = profile.CreatedAt
-        });
+        var result = await _adminService.AddProfileFromJellyfinAsync(CurrentUserId, request);
+        return ToActionResult(result);
     }
-
-    // ── Import Queue ─────────────────────────────────────────────────────────
 
     [HttpGet("import-queue")]
     public async Task<ActionResult<PagedResult<ImportQueueItemDto>>> GetImportQueue([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var query = _context.ImportQueueItems.OrderByDescending(i => i.CreatedAt);
-        var totalCount = await query.CountAsync();
-
-        var items = await query
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(i => new ImportQueueItemDto
-            {
-                Id = i.Id,
-                JellyfinItemId = i.JellyfinItemId,
-                MediaType = i.MediaType.ToString(),
-                Priority = i.Priority,
-                Status = i.Status.ToString(),
-                RetryCount = i.RetryCount,
-                CreatedAt = i.CreatedAt
-            })
-            .ToListAsync();
-
-        return Ok(new PagedResult<ImportQueueItemDto>
-        {
-            Data = items,
-            TotalCount = totalCount,
-            Page = page,
-            PageSize = pageSize
-        });
+        var result = await _adminService.GetImportQueueAsync(CurrentUserId, page, pageSize);
+        return ToActionResult(result);
     }
-
-    // ── Media Library ────────────────────────────────────────────────────────
 
     [HttpGet("media")]
     public async Task<ActionResult<PagedResult<MediaLibraryItemDto>>> GetMediaLibrary([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var query = _context.MediaItems.OrderBy(m => m.Title);
-        var totalCount = await query.CountAsync();
-
-        var items = await query
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(m => new MediaLibraryItemDto
-            {
-                Id = m.Id,
-                Title = m.Title,
-                MediaType = m.MediaType.ToString(),
-                PosterPath = m.PosterPath,
-                ReleaseDate = m.ReleaseDate,
-                Status = m.Status,
-                TmdbId = m.TmdbId,
-                TvMazeId = m.TvMazeId,
-                ImdbId = m.ImdbId,
-                CreatedAt = m.CreatedAt
-            })
-            .ToListAsync();
-
-        return Ok(new PagedResult<MediaLibraryItemDto>
-        {
-            Data = items,
-            TotalCount = totalCount,
-            Page = page,
-            PageSize = pageSize
-        });
+        var result = await _adminService.GetMediaLibraryAsync(CurrentUserId, page, pageSize);
+        return ToActionResult(result);
     }
 
     [HttpDelete("media/{id:int}")]
     public async Task<IActionResult> DeleteMediaItem(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var mediaItem = await _context.MediaItems.FindAsync(id);
-        if (mediaItem is null) return NotFound();
-
-        // Clear MediaItemId from JellyfinLibraryItems so the series can be re-imported
-        var libraryItems = await _context.JellyfinLibraryItems
-            .Where(j => j.MediaItemId == id)
-            .ToListAsync();
-
-        foreach (var li in libraryItems)
-            li.MediaItemId = null;
-
-        _context.MediaItems.Remove(mediaItem);
-        await _context.SaveChangesAsync();
-
-        return NoContent();
+        var result = await _adminService.DeleteMediaItemAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
 
     [HttpPost("media/{id:int}/refresh")]
     public async Task<IActionResult> RefreshMediaItem(int id, [FromBody] RefreshMediaItemDto? dto = null)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var mediaItem = await _context.MediaItems.FindAsync(id);
-        if (mediaItem is null) return NotFound();
-
-        var refreshImages = dto?.RefreshImages ?? true;
-        await _metadataService.RefreshMediaItemAsync(id, dto?.ForceTmdbId, refreshImages);
-        return Ok(new { message = "Refresh complete", title = mediaItem.Title });
+        var result = await _adminService.RefreshMediaItemAsync(CurrentUserId, id, dto);
+        return ToActionResult(result);
     }
 
     [HttpGet("media/{id:int}/poster-options")]
     public async Task<IActionResult> GetPosterOptions(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var options = await _metadataService.GetPosterOptionsAsync(id);
-        return Ok(options);
+        var result = await _adminService.GetPosterOptionsAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
 
     [HttpPost("media/{id:int}/select-poster")]
     public async Task<IActionResult> SelectPoster(int id, [FromBody] SelectPosterDto dto)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var mediaItem = await _context.MediaItems.FindAsync(id);
-        if (mediaItem is null) return NotFound();
-
-        await _metadataService.SelectPosterAsync(id, dto.RemoteUrl);
-        return Ok(new { message = "Poster selected" });
+        var result = await _adminService.SelectPosterAsync(CurrentUserId, id, dto);
+        return ToActionResult(result);
     }
 
     [HttpGet("media/{id:int}/logo-options")]
     public async Task<IActionResult> GetLogoOptions(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var options = await _metadataService.GetLogoOptionsAsync(id);
-        return Ok(options);
+        var result = await _adminService.GetLogoOptionsAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
 
     [HttpPost("media/{id:int}/select-logo")]
     public async Task<IActionResult> SelectLogo(int id, [FromBody] SelectPosterDto dto)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var mediaItem = await _context.MediaItems.FindAsync(id);
-        if (mediaItem is null) return NotFound();
-
-        await _metadataService.SelectLogoAsync(id, dto.RemoteUrl);
-        return Ok(new { message = "Logo selected" });
+        var result = await _adminService.SelectLogoAsync(CurrentUserId, id, dto);
+        return ToActionResult(result);
     }
 
     [HttpPost("media/refresh-all-metadata")]
     public async Task<IActionResult> RefreshAllMetadata()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var count = await _metadataService.RefreshAllMetadataAsync();
-        return Ok(new { message = $"Refreshed metadata for {count} items", count });
+        var result = await _adminService.RefreshAllMetadataAsync(CurrentUserId);
+        return ToActionResult(result);
     }
 
     [HttpPost("media/refresh-all-images")]
     public async Task<IActionResult> RefreshAllImages()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var count = await _metadataService.RefreshAllImagesAsync();
-        return Ok(new { message = $"Refreshed images for {count} items", count });
+        var result = await _adminService.RefreshAllImagesAsync(CurrentUserId);
+        return ToActionResult(result);
     }
-
-    // ── Profile purge ──────────────────────────────────────────────────────
 
     [HttpDelete("profiles/{profileId:int}/media")]
     public async Task<IActionResult> PurgeProfileMedia(int profileId)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var profile = await _context.Profiles.FindAsync(profileId);
-        if (profile is null) return NotFound(new { message = "Profile not found" });
-
-        var watchStates = await _context.ProfileWatchStates
-            .Where(ws => ws.ProfileId == profileId)
-            .ToListAsync();
-        _context.ProfileWatchStates.RemoveRange(watchStates);
-
-        var watchEvents = await _context.WatchEvents
-            .Where(e => e.ProfileId == profileId)
-            .ToListAsync();
-        _context.WatchEvents.RemoveRange(watchEvents);
-
-        var blocks = await _context.ProfileMediaBlocks
-            .Where(b => b.ProfileId == profileId)
-            .ToListAsync();
-        _context.ProfileMediaBlocks.RemoveRange(blocks);
-
-        await _context.SaveChangesAsync();
-
-        return Ok(new
-        {
-            message = $"Purged all media data for profile {profile.DisplayName}",
-            watchStatesRemoved = watchStates.Count,
-            watchEventsRemoved = watchEvents.Count,
-            blocksRemoved = blocks.Count
-        });
+        var result = await _adminService.PurgeProfileMediaAsync(CurrentUserId, profileId);
+        return ToActionResult(result);
     }
-
-    // ── Profile delete ────────────────────────────────────────────────────────
 
     [HttpDelete("profiles/{id:int}")]
     public async Task<IActionResult> DeleteProfile(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var profile = await _context.Profiles.FindAsync(id);
-        if (profile is null) return NotFound(new { message = "Profile not found" });
-
-        // Prevent deleting own primary profile
-        var currentUser = await _context.Users.FindAsync(CurrentUserId);
-        if (currentUser is not null && profile.JellyfinUserId == currentUser.JellyfinUserId && profile.UserId == currentUser.Id)
-            return BadRequest(new { message = "Cannot delete your own primary profile." });
-
-        var watchStates = await _context.ProfileWatchStates.Where(ws => ws.ProfileId == id).ToListAsync();
-        _context.ProfileWatchStates.RemoveRange(watchStates);
-
-        var watchEvents = await _context.WatchEvents.Where(e => e.ProfileId == id).ToListAsync();
-        _context.WatchEvents.RemoveRange(watchEvents);
-
-        var notes = await _context.ProfileNotes.Where(n => n.ProfileId == id).ToListAsync();
-        _context.ProfileNotes.RemoveRange(notes);
-
-        var blocks = await _context.ProfileMediaBlocks.Where(b => b.ProfileId == id).ToListAsync();
-        _context.ProfileMediaBlocks.RemoveRange(blocks);
-
-        var propagationRules = await _context.PropagationRules
-            .Where(r => r.SourceProfileId == id || r.TargetProfileId == id)
-            .ToListAsync();
-        _context.PropagationRules.RemoveRange(propagationRules);
-
-        _context.Profiles.Remove(profile);
-        await _context.SaveChangesAsync();
-
-        // Also delete the linked user if they have one (and it's not the current user)
-        if (profile.UserId.HasValue && profile.UserId.Value != CurrentUserId)
-        {
-            var linkedUser = await _context.Users.FindAsync(profile.UserId.Value);
-            if (linkedUser is not null)
-            {
-                _context.Users.Remove(linkedUser);
-                await _context.SaveChangesAsync();
-            }
-        }
-
-        return Ok(new { message = $"Profile \"{profile.DisplayName}\" deleted." });
+        var result = await _adminService.DeleteProfileAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
-
-    // ── Create user for profile ───────────────────────────────────────────────
 
     [HttpPost("profiles/{id:int}/create-user")]
     public async Task<IActionResult> CreateUserForProfile(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var profile = await _context.Profiles.FindAsync(id);
-        if (profile is null) return NotFound(new { message = "Profile not found" });
-
-        if (profile.UserId.HasValue)
-            return Conflict(new { message = "This profile already has a linked user." });
-
-        // Check no user already exists for this JellyfinUserId
-        var existingUser = await _context.Users.FirstOrDefaultAsync(u => u.JellyfinUserId == profile.JellyfinUserId);
-        if (existingUser is not null)
-        {
-            profile.UserId = existingUser.Id;
-            await _context.SaveChangesAsync();
-            return Ok(new UserDto
-            {
-                Id = existingUser.Id,
-                Username = existingUser.Username,
-                JellyfinUserId = existingUser.JellyfinUserId,
-                IsAdmin = existingUser.IsAdmin,
-                AvatarUrl = existingUser.AvatarUrl,
-                PreferredLanguage = existingUser.PreferredLanguage,
-                CreatedAt = existingUser.CreatedAt
-            });
-        }
-
-        // Resolve IsAdmin and AvatarUrl from Jellyfin if possible
-        bool isAdmin = false;
-        string? avatarUrl = null;
-        try
-        {
-            var jellyfinUsers = await _jellyfinClient.GetUsersAsync();
-            var match = jellyfinUsers.FirstOrDefault(u => u.Id == profile.JellyfinUserId);
-            if (match is not null)
-            {
-                isAdmin = match.IsAdministrator;
-            }
-        }
-        catch { /* silently ignore Jellyfin lookup failures */ }
-
-        var serverUrl = _jellyfinSettings.BaseUrl.TrimEnd('/');
-        if (string.IsNullOrEmpty(serverUrl))
-        {
-            // Fall back to any existing user's server URL
-            var anyUser = await _context.Users.FirstOrDefaultAsync(u => u.JellyfinServerUrl != null);
-            serverUrl = anyUser?.JellyfinServerUrl ?? string.Empty;
-        }
-
-        var user = new User
-        {
-            JellyfinUserId = profile.JellyfinUserId,
-            Username = profile.DisplayName,
-            IsAdmin = isAdmin,
-            AvatarUrl = avatarUrl,
-            JellyfinServerUrl = serverUrl
-        };
-
-        _context.Users.Add(user);
-        await _context.SaveChangesAsync();
-
-        profile.UserId = user.Id;
-        await _context.SaveChangesAsync();
-
-        return Ok(new UserDto
-        {
-            Id = user.Id,
-            Username = user.Username,
-            JellyfinUserId = user.JellyfinUserId,
-            IsAdmin = user.IsAdmin,
-            AvatarUrl = user.AvatarUrl,
-            PreferredLanguage = user.PreferredLanguage,
-            CreatedAt = user.CreatedAt
-        });
+        var result = await _adminService.CreateUserForProfileAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
-
-    // ── Blacklist ─────────────────────────────────────────────────────────────
 
     [HttpGet("blacklist")]
     public async Task<ActionResult<List<BlacklistedItemDto>>> GetBlacklist()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var items = await _context.BlacklistedItems
-            .OrderByDescending(b => b.CreatedAt)
-            .Select(b => new BlacklistedItemDto
-            {
-                Id = b.Id,
-                JellyfinItemId = b.JellyfinItemId,
-                DisplayName = b.DisplayName,
-                Reason = b.Reason,
-                CreatedAt = b.CreatedAt
-            })
-            .ToListAsync();
-
-        return Ok(items);
+        var result = await _adminService.GetBlacklistAsync(CurrentUserId);
+        return ToActionResult(result);
     }
 
     [HttpPost("blacklist")]
     public async Task<ActionResult<BlacklistedItemDto>> AddToBlacklist([FromBody] AddToBlacklistDto dto)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var existing = await _context.BlacklistedItems
-            .FirstOrDefaultAsync(b => b.JellyfinItemId == dto.JellyfinItemId);
-
-        if (existing is not null)
-            return Conflict(new { message = "Already blacklisted" });
-
-        var item = new BlacklistedItem
-        {
-            JellyfinItemId = dto.JellyfinItemId,
-            DisplayName = dto.DisplayName,
-            Reason = dto.Reason
-        };
-
-        _context.BlacklistedItems.Add(item);
-
-        // Also remove from import queue if pending
-        var queueItems = await _context.ImportQueueItems
-            .Where(q => q.JellyfinItemId == dto.JellyfinItemId)
-            .ToListAsync();
-        _context.ImportQueueItems.RemoveRange(queueItems);
-
-        await _context.SaveChangesAsync();
-
-        return Ok(new BlacklistedItemDto
-        {
-            Id = item.Id,
-            JellyfinItemId = item.JellyfinItemId,
-            DisplayName = item.DisplayName,
-            Reason = item.Reason,
-            CreatedAt = item.CreatedAt
-        });
+        var result = await _adminService.AddToBlacklistAsync(CurrentUserId, dto);
+        return ToActionResult(result);
     }
 
     [HttpDelete("blacklist/{id:int}")]
     public async Task<IActionResult> RemoveFromBlacklist(int id)
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var item = await _context.BlacklistedItems.FindAsync(id);
-        if (item is null) return NotFound();
-
-        _context.BlacklistedItems.Remove(item);
-        await _context.SaveChangesAsync();
-
-        return NoContent();
+        var result = await _adminService.RemoveFromBlacklistAsync(CurrentUserId, id);
+        return ToActionResult(result);
     }
 
     [HttpGet("profile-blocks")]
     public async Task<IActionResult> GetAllProfileBlocks()
     {
-        if (!await IsAdminAsync()) return Forbid();
-
-        var blocks = await _context.ProfileMediaBlocks
-            .Include(b => b.Profile)
-            .Include(b => b.MediaItem)
-                .ThenInclude(m => m.Translations)
-            .OrderByDescending(b => b.CreatedAt)
-            .Select(b => new AdminProfileBlockDto
-            {
-                Id = b.Id,
-                ProfileId = b.ProfileId,
-                ProfileName = b.Profile.DisplayName,
-                MediaItemId = b.MediaItemId,
-                Title = b.MediaItem.Title,
-                SpanishTitle = b.MediaItem.Translations
-                    .Where(t => t.Language.StartsWith("es") && t.Title != null)
-                    .Select(t => t.Title)
-                    .FirstOrDefault(),
-                MediaType = b.MediaItem.MediaType,
-                BlockedAt = b.CreatedAt,
-            })
-            .ToListAsync();
-
-        return Ok(blocks);
+        var result = await _adminService.GetAllProfileBlocksAsync(CurrentUserId);
+        return ToActionResult(result);
     }
 }

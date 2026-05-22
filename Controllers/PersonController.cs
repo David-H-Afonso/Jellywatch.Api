@@ -1,8 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Metadata;
+using Jellywatch.Api.Infrastructure.Persistence;
+using Jellywatch.Api.Infrastructure.ExternalServices;
+using Jellywatch.Api.Application.Interfaces;
 
 namespace Jellywatch.Api.Controllers;
 

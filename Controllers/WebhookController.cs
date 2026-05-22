@@ -3,10 +3,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Jellywatch.Api.Configuration;
-using Jellywatch.Api.Domain;
+using Jellywatch.Api.Domain.Entities;
 using Jellywatch.Api.Domain.Enums;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Sync;
+using Jellywatch.Api.Infrastructure.Persistence;
+using Jellywatch.Api.Application.Interfaces;
+using Jellywatch.Api.Application.Services;
+using Jellywatch.Api.Infrastructure.BackgroundJobs;
 
 namespace Jellywatch.Api.Controllers;
 

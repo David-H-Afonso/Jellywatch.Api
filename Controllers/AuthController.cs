@@ -2,11 +2,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Contracts;
-using Jellywatch.Api.Infrastructure;
-using Jellywatch.Api.Services.Auth;
-using Jellywatch.Api.Services.Jellyfin;
-using Jellywatch.Api.Services.Sync;
-using Jellywatch.Api.Domain;
+using Jellywatch.Api.Infrastructure.Persistence;
+using Jellywatch.Api.Application.Interfaces;
+using Jellywatch.Api.Application.Services;
+using Jellywatch.Api.Infrastructure.ExternalServices;
+using Jellywatch.Api.Infrastructure.BackgroundJobs;
+using Jellywatch.Api.Domain.Entities;
 
 namespace Jellywatch.Api.Controllers;
 
