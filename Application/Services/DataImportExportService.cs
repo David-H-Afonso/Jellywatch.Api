@@ -12,6 +12,8 @@ namespace Jellywatch.Api.Application.Services;
 
 public class DataImportExportService : IDataImportExportService
 {
+    private const decimal MinUserRating = 0m;
+    private const decimal MaxUserRating = 10m;
     private readonly JellywatchDbContext _context;
     private readonly ILogger<DataImportExportService> _logger;
     private readonly IMetadataResolutionService _metadata;
@@ -496,6 +498,11 @@ public class DataImportExportService : IDataImportExportService
         if (row.Type == "episode" && (row.SeasonNumber is null || row.EpisodeNumber is null))
         {
             errors.Add($"Row {lineNumber}: Episode missing season/episode number");
+            return false;
+        }
+        if (row.Rating is < MinUserRating or > MaxUserRating)
+        {
+            errors.Add($"Row {lineNumber}: Rating must be between {MinUserRating} and {MaxUserRating}");
             return false;
         }
         return true;

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Jellywatch.Api.Domain.Enums;
 
 namespace Jellywatch.Api.Contracts;
@@ -135,6 +136,7 @@ public class WatchStateUpdateDto
 
 public class UserRatingDto
 {
+    [Range(typeof(decimal), "0", "10", ErrorMessage = "Rating must be between 0 and 10.")]
     public decimal? Rating { get; set; }
 }
 

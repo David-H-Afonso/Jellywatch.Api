@@ -11,6 +11,8 @@ namespace Jellywatch.Api.Application.Services;
 
 public class MediaQueryService : IMediaQueryService
 {
+    private const decimal MinUserRating = 0m;
+    private const decimal MaxUserRating = 10m;
     private readonly JellywatchDbContext _context;
     private readonly ITmdbApiClient _tmdbClient;
 
@@ -397,6 +399,9 @@ public class MediaQueryService : IMediaQueryService
 
     public async Task<ServiceResult<object>> RateSeriesAsync(int id, int profileId, UserRatingDto dto)
     {
+        var ratingValidation = ValidateUserRating(dto.Rating);
+        if (ratingValidation is not null) return ratingValidation;
+
         var series = await _context.Series.FirstOrDefaultAsync(s => s.Id == id);
         if (series is null) return ServiceResult<object>.Fail("Series not found", 404);
 
@@ -428,6 +433,9 @@ public class MediaQueryService : IMediaQueryService
 
     public async Task<ServiceResult<object>> RateEpisodeAsync(int seriesId, int episodeId, int profileId, UserRatingDto dto)
     {
+        var ratingValidation = ValidateUserRating(dto.Rating);
+        if (ratingValidation is not null) return ratingValidation;
+
         var episode = await _context.Episodes
             .Include(e => e.Season)
             .FirstOrDefaultAsync(e => e.Id == episodeId && e.Season.SeriesId == seriesId);
@@ -464,6 +472,9 @@ public class MediaQueryService : IMediaQueryService
 
     public async Task<ServiceResult<object>> RateSeasonAsync(int seriesId, int seasonId, int profileId, UserRatingDto dto)
     {
+        var ratingValidation = ValidateUserRating(dto.Rating);
+        if (ratingValidation is not null) return ratingValidation;
+
         var season = await _context.Seasons
             .FirstOrDefaultAsync(s => s.Id == seasonId && s.SeriesId == seriesId);
 
@@ -718,6 +729,9 @@ public class MediaQueryService : IMediaQueryService
 
     public async Task<ServiceResult<object>> RateMovieAsync(int id, int profileId, UserRatingDto dto)
     {
+        var ratingValidation = ValidateUserRating(dto.Rating);
+        if (ratingValidation is not null) return ratingValidation;
+
         var movie = await _context.Movies.FindAsync(id);
         if (movie is null) return ServiceResult<object>.Fail("Movie not found", 404);
 
@@ -803,6 +817,15 @@ public class MediaQueryService : IMediaQueryService
         }
 
         return false;
+    }
+
+    private static ServiceResult<object>? ValidateUserRating(decimal? rating)
+    {
+        if (rating is null) return null;
+
+        return rating < MinUserRating || rating > MaxUserRating
+            ? ServiceResult<object>.Fail($"Rating must be between {MinUserRating} and {MaxUserRating}", 400)
+            : null;
     }
 
     private async Task<bool> WatchlistTreeContainsDashboardMediaAsync(
