@@ -51,7 +51,7 @@ public class PropagationService : IPropagationService
                     s.EpisodeId == episodeId &&
                     s.MovieId == movieId);
 
-            if (targetState?.IsManualOverride == true)
+            if (targetState?.IsManualOverride == true && !HasNewerSourceTimestamp(targetState, timestamp))
             {
                 _logger.LogDebug("Skipping propagation to profile {TargetId} — manual override", rule.TargetProfileId);
                 continue;
@@ -73,12 +73,15 @@ public class PropagationService : IPropagationService
                     MovieId = movieId,
                     State = newState,
                     IsManualOverride = false,
+                    LastUpdated = DateTime.UtcNow,
                 });
                 _logger.LogInformation("Propagated {State} to profile {TargetId} for media {MediaId}", newState, rule.TargetProfileId, mediaItemId);
             }
             else
             {
                 targetState.State = newState;
+                targetState.IsManualOverride = false;
+                targetState.LastUpdated = DateTime.UtcNow;
                 _logger.LogInformation("Upgraded state to {State} for profile {TargetId} media {MediaId}", newState, rule.TargetProfileId, mediaItemId);
             }
 
@@ -118,5 +121,11 @@ public class PropagationService : IPropagationService
         }
 
         await _context.SaveChangesAsync();
+    }
+
+    private static bool HasNewerSourceTimestamp(ProfileWatchState targetState, DateTime? timestamp)
+    {
+        if (!timestamp.HasValue) return false;
+        return timestamp.Value > targetState.LastUpdated;
     }
 }
