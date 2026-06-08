@@ -155,8 +155,15 @@ public class ProfileController : BaseApiController
             .Take(query.Take)
             .ToListAsync();
 
-        // Batch-load user ratings for these events
+        // Batch-load user ratings for these events.
+        // Series activity is episode-based, so prefer episode rating, then season, then series.
         var episodeIds = events.Where(e => e.EpisodeId != null).Select(e => e.EpisodeId!.Value).Distinct().ToList();
+        var seasonIds = events.Where(e => e.Episode != null).Select(e => e.Episode!.SeasonId).Distinct().ToList();
+        var seriesMediaItemIds = events
+            .Where(e => e.MediaItem.MediaType == Domain.Enums.MediaType.Series)
+            .Select(e => e.MediaItemId)
+            .Distinct()
+            .ToList();
         var movieIds = events.Where(e => e.MovieId != null).Select(e => e.MovieId!.Value).Distinct().ToList();
 
         var episodeRatings = new Dictionary<int, decimal?>();
@@ -167,6 +174,32 @@ public class ProfileController : BaseApiController
                 .ToListAsync();
             episodeRatings = episodeStates
                 .GroupBy(s => s.EpisodeId!.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
+        }
+
+        var seasonRatings = new Dictionary<int, decimal?>();
+        if (seasonIds.Count > 0)
+        {
+            var seasonStates = await _context.ProfileWatchStates
+                .Where(s => s.ProfileId == profileId && s.SeasonId != null && seasonIds.Contains(s.SeasonId.Value))
+                .ToListAsync();
+            seasonRatings = seasonStates
+                .GroupBy(s => s.SeasonId!.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
+        }
+
+        var seriesRatings = new Dictionary<int, decimal?>();
+        if (seriesMediaItemIds.Count > 0)
+        {
+            var seriesStates = await _context.ProfileWatchStates
+                .Where(s => s.ProfileId == profileId
+                    && seriesMediaItemIds.Contains(s.MediaItemId)
+                    && s.EpisodeId == null
+                    && s.SeasonId == null
+                    && s.MovieId == null)
+                .ToListAsync();
+            seriesRatings = seriesStates
+                .GroupBy(s => s.MediaItemId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
         }
 
@@ -184,8 +217,18 @@ public class ProfileController : BaseApiController
         var dtos = events.Select(e =>
         {
             decimal? userRating = null;
-            if (e.EpisodeId != null) episodeRatings.TryGetValue(e.EpisodeId.Value, out userRating);
+            if (e.EpisodeId != null)
+            {
+                episodeRatings.TryGetValue(e.EpisodeId.Value, out var episodeRating);
+                decimal? seasonRating = null;
+                if (e.Episode != null)
+                    seasonRatings.TryGetValue(e.Episode.SeasonId, out seasonRating);
+                seriesRatings.TryGetValue(e.MediaItemId, out var seriesRating);
+                userRating = episodeRating ?? seasonRating ?? seriesRating;
+            }
             else if (e.MovieId != null) movieRatings.TryGetValue(e.MovieId.Value, out userRating);
+            else if (e.MediaItem.MediaType == Domain.Enums.MediaType.Series)
+                seriesRatings.TryGetValue(e.MediaItemId, out userRating);
 
             return new ActivityDto
             {
