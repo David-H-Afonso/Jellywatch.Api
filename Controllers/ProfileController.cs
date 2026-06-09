@@ -164,7 +164,34 @@ public class ProfileController : BaseApiController
             .Select(e => e.MediaItemId)
             .Distinct()
             .ToList();
-        var movieIds = events.Where(e => e.MovieId != null).Select(e => e.MovieId!.Value).Distinct().ToList();
+        var movieMediaItemIds = events
+            .Where(e => e.MediaItem.MediaType == Domain.Enums.MediaType.Movie)
+            .Select(e => e.MediaItemId)
+            .Distinct()
+            .ToList();
+
+        var seriesIdByMediaItemId = new Dictionary<int, int>();
+        if (seriesMediaItemIds.Count > 0)
+        {
+            seriesIdByMediaItemId = await _context.Series
+                .Where(s => seriesMediaItemIds.Contains(s.MediaItemId))
+                .ToDictionaryAsync(s => s.MediaItemId, s => s.Id);
+        }
+
+        var movieIdByMediaItemId = new Dictionary<int, int>();
+        if (movieMediaItemIds.Count > 0)
+        {
+            movieIdByMediaItemId = await _context.Movies
+                .Where(m => movieMediaItemIds.Contains(m.MediaItemId))
+                .ToDictionaryAsync(m => m.MediaItemId, m => m.Id);
+        }
+
+        var movieIds = events
+            .Where(e => e.MovieId != null)
+            .Select(e => e.MovieId!.Value)
+            .Concat(movieIdByMediaItemId.Values)
+            .Distinct()
+            .ToList();
 
         var episodeRatings = new Dictionary<int, decimal?>();
         if (episodeIds.Count > 0)
@@ -204,19 +231,44 @@ public class ProfileController : BaseApiController
         }
 
         var movieRatings = new Dictionary<int, decimal?>();
-        if (movieIds.Count > 0)
+        var movieRatingsByMediaItemId = new Dictionary<int, decimal?>();
+        if (movieIds.Count > 0 || movieMediaItemIds.Count > 0)
         {
             var movieStates = await _context.ProfileWatchStates
-                .Where(s => s.ProfileId == profileId && s.MovieId != null && movieIds.Contains(s.MovieId.Value))
+                .Where(s => s.ProfileId == profileId
+                    && s.EpisodeId == null
+                    && s.SeasonId == null
+                    && ((s.MovieId != null && movieIds.Contains(s.MovieId.Value))
+                        || movieMediaItemIds.Contains(s.MediaItemId)))
                 .ToListAsync();
             movieRatings = movieStates
+                .Where(s => s.MovieId != null)
                 .GroupBy(s => s.MovieId!.Value)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
+            movieRatingsByMediaItemId = movieStates
+                .GroupBy(s => s.MediaItemId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
         }
 
         var dtos = events.Select(e =>
         {
             decimal? userRating = null;
+            int? seriesId = e.Episode?.Season?.SeriesId;
+            if (seriesId == null
+                && e.MediaItem.MediaType == Domain.Enums.MediaType.Series
+                && seriesIdByMediaItemId.TryGetValue(e.MediaItemId, out var resolvedSeriesId))
+            {
+                seriesId = resolvedSeriesId;
+            }
+
+            int? movieId = e.MovieId;
+            if (movieId == null
+                && e.MediaItem.MediaType == Domain.Enums.MediaType.Movie
+                && movieIdByMediaItemId.TryGetValue(e.MediaItemId, out var resolvedMovieId))
+            {
+                movieId = resolvedMovieId;
+            }
+
             if (e.EpisodeId != null)
             {
                 episodeRatings.TryGetValue(e.EpisodeId.Value, out var episodeRating);
@@ -226,7 +278,14 @@ public class ProfileController : BaseApiController
                 seriesRatings.TryGetValue(e.MediaItemId, out var seriesRating);
                 userRating = episodeRating ?? seasonRating ?? seriesRating;
             }
-            else if (e.MovieId != null) movieRatings.TryGetValue(e.MovieId.Value, out userRating);
+            else if (e.MediaItem.MediaType == Domain.Enums.MediaType.Movie)
+            {
+                decimal? movieRating = null;
+                if (movieId.HasValue)
+                    movieRatings.TryGetValue(movieId.Value, out movieRating);
+                movieRatingsByMediaItemId.TryGetValue(e.MediaItemId, out var movieMediaItemRating);
+                userRating = movieRating ?? movieMediaItemRating;
+            }
             else if (e.MediaItem.MediaType == Domain.Enums.MediaType.Series)
                 seriesRatings.TryGetValue(e.MediaItemId, out userRating);
 
@@ -234,8 +293,8 @@ public class ProfileController : BaseApiController
             {
                 Id = e.Id,
                 MediaItemId = e.MediaItemId,
-                SeriesId = e.Episode?.Season?.SeriesId,
-                MovieId = e.MovieId,
+                SeriesId = seriesId,
+                MovieId = movieId,
                 MediaTitle = e.MediaItem.Title,
                 EpisodeName = e.Episode?.Name,
                 EpisodeNumber = e.Episode?.EpisodeNumber,
