@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain.Entities;
@@ -192,6 +193,21 @@ public class ProfileController : BaseApiController
             .Concat(movieIdByMediaItemId.Values)
             .Distinct()
             .ToList();
+        var mediaItemIds = seriesMediaItemIds
+            .Concat(movieMediaItemIds)
+            .Distinct()
+            .ToList();
+
+        var tmdbRatingsByMediaItemId = new Dictionary<int, double?>();
+        if (mediaItemIds.Count > 0)
+        {
+            var tmdbRatings = await _context.ExternalRatings
+                .Where(r => mediaItemIds.Contains(r.MediaItemId) && r.Provider == ExternalProvider.Tmdb)
+                .ToListAsync();
+            tmdbRatingsByMediaItemId = tmdbRatings.ToDictionary(
+                r => r.MediaItemId,
+                r => TryParseRating(r.Score));
+        }
 
         var episodeRatings = new Dictionary<int, decimal?>();
         if (episodeIds.Count > 0)
@@ -289,6 +305,8 @@ public class ProfileController : BaseApiController
             else if (e.MediaItem.MediaType == Domain.Enums.MediaType.Series)
                 seriesRatings.TryGetValue(e.MediaItemId, out userRating);
 
+            tmdbRatingsByMediaItemId.TryGetValue(e.MediaItemId, out var mediaItemTmdbRating);
+
             return new ActivityDto
             {
                 Id = e.Id,
@@ -306,7 +324,7 @@ public class ProfileController : BaseApiController
                 CreatedAt = e.CreatedAt,
                 PosterPath = e.MediaItem.PosterPath,
                 UserRating = userRating,
-                TmdbRating = e.Episode?.TmdbRating,
+                TmdbRating = e.Episode?.TmdbRating ?? mediaItemTmdbRating,
             };
         }).ToList();
 
@@ -349,6 +367,14 @@ public class ProfileController : BaseApiController
         var (success, message, error) = await _watchStateService.UpdateSeriesStateAsync(profileId, seriesId, dto);
         if (!success) return NotFound(new { message = error });
         return Ok(new { message });
+    }
+
+    private static double? TryParseRating(string? score)
+    {
+        if (string.IsNullOrWhiteSpace(score)) return null;
+        return double.TryParse(score, NumberStyles.Float, CultureInfo.InvariantCulture, out var rating)
+            ? rating
+            : null;
     }
 
     private async Task<int> CountCompletedSeriesAsync(int profileId)
