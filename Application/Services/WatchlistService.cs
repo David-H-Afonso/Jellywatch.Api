@@ -815,6 +815,7 @@ public class WatchlistService : IWatchlistService
     {
         var isInProfile = false;
         var isBlacklisted = false;
+        decimal? userRating = null;
 
         if (profileId.HasValue)
         {
@@ -822,6 +823,10 @@ public class WatchlistService : IWatchlistService
                 .AnyAsync(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == mediaItem.Id);
             isBlacklisted = await _context.ProfileMediaBlocks
                 .AnyAsync(b => b.ProfileId == profileId.Value && b.MediaItemId == mediaItem.Id);
+            userRating = await _context.ProfileWatchStates
+                .Where(ws => ws.ProfileId == profileId.Value && ws.MediaItemId == mediaItem.Id && ws.EpisodeId == null && ws.MovieId == null)
+                .Select(ws => ws.UserRating)
+                .FirstOrDefaultAsync();
         }
 
         return new WatchlistMediaItemDto
@@ -834,6 +839,7 @@ public class WatchlistService : IWatchlistService
             OriginalTitle = mediaItem.OriginalTitle,
             PosterPath = mediaItem.PosterPath,
             ReleaseDate = mediaItem.ReleaseDate,
+            UserRating = userRating,
             IsInProfile = isInProfile,
             IsBlacklisted = isBlacklisted,
             CanAddToProfile = profileId.HasValue && (!isInProfile || isBlacklisted)

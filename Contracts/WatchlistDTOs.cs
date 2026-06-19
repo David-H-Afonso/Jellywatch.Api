@@ -89,6 +89,7 @@ public class WatchlistMediaItemDto
     public string? OriginalTitle { get; set; }
     public string? PosterPath { get; set; }
     public string? ReleaseDate { get; set; }
+    public decimal? UserRating { get; set; }
     public bool IsInProfile { get; set; }
     public bool IsBlacklisted { get; set; }
     public bool CanAddToProfile { get; set; }
