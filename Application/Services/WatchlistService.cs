@@ -11,10 +11,14 @@ public class WatchlistService : IWatchlistService
 {
     private const int MaxNestedDepth = 5;
     private readonly JellywatchDbContext _context;
+    private readonly IMetadataResolutionService _metadata;
+    private readonly ILogger<WatchlistService> _logger;
 
-    public WatchlistService(JellywatchDbContext context)
+    public WatchlistService(JellywatchDbContext context, IMetadataResolutionService metadata, ILogger<WatchlistService> logger)
     {
         _context = context;
+        _metadata = metadata;
+        _logger = logger;
     }
 
     public async Task<ServiceResult<WatchlistIndexDto>> GetWatchlistsAsync(int currentUserId, int? profileId)
@@ -999,5 +1003,177 @@ public class WatchlistService : IWatchlistService
         }
 
         return false;
+    }
+
+    public async Task<ServiceResult<WatchlistExportDto>> ExportWatchlistAsync(int currentUserId, int watchlistId)
+    {
+        var member = await _context.WatchlistMembers
+            .Include(m => m.Watchlist)
+                .ThenInclude(w => w.Items)
+                    .ThenInclude(i => i.MediaItem)
+            .FirstOrDefaultAsync(m => m.WatchlistId == watchlistId && m.UserId == currentUserId);
+
+        if (member is null)
+            return ServiceResult<WatchlistExportDto>.Fail("Watchlist not found or access denied", 404);
+
+        var watchlist = member.Watchlist;
+        var exportItems = watchlist.Items
+            .Where(i => i.ItemType == WatchlistItemType.MediaItem && i.MediaItem != null)
+            .OrderBy(i => i.Position)
+            .Select(i => new WatchlistExportItemDto
+            {
+                MediaType = i.MediaItem!.MediaType.ToString(),
+                Title = i.MediaItem.Title,
+                TmdbId = i.MediaItem.TmdbId,
+                ImdbId = i.MediaItem.ImdbId,
+                Status = i.Status.ToString(),
+                Position = i.Position,
+            })
+            .ToList();
+
+        return ServiceResult<WatchlistExportDto>.Ok(new WatchlistExportDto
+        {
+            Name = watchlist.Name,
+            Description = watchlist.Description,
+            State = watchlist.State.ToString(),
+            ExportedAt = DateTime.UtcNow,
+            Items = exportItems,
+        });
+    }
+
+    public async Task<ServiceResult<WatchlistImportResultDto>> ImportWatchlistAsync(int currentUserId, WatchlistImportDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Name))
+            return ServiceResult<WatchlistImportResultDto>.Fail("Watchlist name is required", 400);
+
+        if (dto.Items.Count == 0)
+            return ServiceResult<WatchlistImportResultDto>.Fail("No items to import", 400);
+
+        var state = WatchlistState.Pending;
+        if (!string.IsNullOrEmpty(dto.State) && Enum.TryParse<WatchlistState>(dto.State, true, out var parsedState))
+            state = parsedState;
+
+        var watchlist = new Watchlist
+        {
+            Name = dto.Name,
+            Description = dto.Description,
+            OwnerUserId = currentUserId,
+            State = state,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        _context.Watchlists.Add(watchlist);
+        await _context.SaveChangesAsync();
+
+        _context.WatchlistMembers.Add(new WatchlistMember
+        {
+            WatchlistId = watchlist.Id,
+            UserId = currentUserId,
+            Role = WatchlistRole.Owner,
+            CanAddItems = true,
+            CanRemoveItems = true,
+            CanReorderItems = true,
+            CanUpdateItemStatus = true,
+            CanInviteMembers = true,
+            CanManageMembers = true,
+            CanUpdateWatchlist = true,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _context.SaveChangesAsync();
+
+        var imported = 0;
+        var skipped = 0;
+        var errors = new List<string>();
+
+        for (var i = 0; i < dto.Items.Count; i++)
+        {
+            var item = dto.Items[i];
+
+            if (!item.TmdbId.HasValue)
+            {
+                errors.Add($"Item {i + 1} '{item.Title}': No TMDB ID — skipped");
+                skipped++;
+                continue;
+            }
+
+            if (!Enum.TryParse<MediaType>(item.MediaType, true, out var mediaType))
+            {
+                errors.Add($"Item {i + 1} '{item.Title}': Invalid media type '{item.MediaType}' — skipped");
+                skipped++;
+                continue;
+            }
+
+            var mediaItem = await _context.MediaItems
+                .FirstOrDefaultAsync(m => m.TmdbId == item.TmdbId && m.MediaType == mediaType);
+
+            if (mediaItem is null)
+            {
+                try
+                {
+                    var syntheticId = $"watchlist-import-{item.TmdbId}";
+                    if (mediaType == MediaType.Series)
+                    {
+                        mediaItem = await _metadata.ResolveSeriesAsync(syntheticId, item.Title, tmdbId: item.TmdbId);
+                        if (mediaItem != null)
+                        {
+                            var series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+                            if (series != null)
+                                await _metadata.PopulateSeasonsAndEpisodesAsync(series.Id);
+                            await _metadata.RefreshTranslationsAsync(mediaItem.Id);
+                            await _metadata.RefreshImagesAsync(mediaItem.Id);
+                        }
+                    }
+                    else
+                    {
+                        mediaItem = await _metadata.ResolveMovieAsync(syntheticId, item.Title, tmdbId: item.TmdbId);
+                        if (mediaItem != null)
+                        {
+                            await _metadata.RefreshTranslationsAsync(mediaItem.Id);
+                            await _metadata.RefreshImagesAsync(mediaItem.Id);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to import TMDB {TmdbId} ({Title})", item.TmdbId, item.Title);
+                }
+
+                if (mediaItem is null)
+                {
+                    errors.Add($"Item {i + 1} '{item.Title}' (TMDB {item.TmdbId}): Could not resolve from TMDB — skipped");
+                    skipped++;
+                    continue;
+                }
+            }
+
+            var itemStatus = WatchlistStatus.WantToWatch;
+            if (!string.IsNullOrEmpty(item.Status) && Enum.TryParse<WatchlistStatus>(item.Status, true, out var parsedStatus))
+                itemStatus = parsedStatus;
+
+            _context.Set<WatchlistItem>().Add(new WatchlistItem
+            {
+                WatchlistId = watchlist.Id,
+                ItemType = WatchlistItemType.MediaItem,
+                MediaItemId = mediaItem.Id,
+                Status = itemStatus,
+                Position = item.Position ?? imported,
+                AddedByUserId = currentUserId,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            });
+            imported++;
+        }
+
+        await _context.SaveChangesAsync();
+
+        return ServiceResult<WatchlistImportResultDto>.Ok(new WatchlistImportResultDto
+        {
+            WatchlistId = watchlist.Id,
+            WatchlistName = watchlist.Name,
+            TotalItems = dto.Items.Count,
+            ImportedItems = imported,
+            SkippedItems = skipped,
+            Errors = errors.Take(50).ToList(),
+        });
     }
 }

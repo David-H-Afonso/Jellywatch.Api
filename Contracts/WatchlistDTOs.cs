@@ -187,3 +187,52 @@ public class SetDefaultWatchlistDto
 {
     public int? WatchlistId { get; set; }
 }
+
+// ━━━━ IMPORT / EXPORT ━━━━
+
+public class WatchlistExportDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string State { get; set; } = string.Empty;
+    public DateTime ExportedAt { get; set; }
+    public List<WatchlistExportItemDto> Items { get; set; } = new();
+}
+
+public class WatchlistExportItemDto
+{
+    public string MediaType { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public int? TmdbId { get; set; }
+    public string? ImdbId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public int Position { get; set; }
+}
+
+public class WatchlistImportDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string? State { get; set; }
+    public List<WatchlistImportItemDto> Items { get; set; } = new();
+}
+
+public class WatchlistImportItemDto
+{
+    public string MediaType { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public int? TmdbId { get; set; }
+    public string? ImdbId { get; set; }
+    public string? Status { get; set; }
+    public int? Position { get; set; }
+}
+
+public class WatchlistImportResultDto
+{
+    public int WatchlistId { get; set; }
+    public string WatchlistName { get; set; } = string.Empty;
+    public int TotalItems { get; set; }
+    public int ImportedItems { get; set; }
+    public int SkippedItems { get; set; }
+    public List<string> Errors { get; set; } = new();
+}

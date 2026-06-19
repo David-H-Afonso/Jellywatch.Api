@@ -25,4 +25,6 @@ public interface IWatchlistService
     Task<ServiceResult> ApproveAccessRequestAsync(int currentUserId, int requestId);
     Task<ServiceResult> RejectAccessRequestAsync(int currentUserId, int requestId);
     Task<ServiceResult> SetDefaultWatchlistAsync(int currentUserId, SetDefaultWatchlistDto dto);
+    Task<ServiceResult<WatchlistExportDto>> ExportWatchlistAsync(int currentUserId, int watchlistId);
+    Task<ServiceResult<WatchlistImportResultDto>> ImportWatchlistAsync(int currentUserId, WatchlistImportDto dto);
 }

@@ -301,4 +301,30 @@ public class WatchlistsController : BaseApiController
         }
         return NoContent();
     }
+
+    [HttpGet("{id:int}/export")]
+    public async Task<ActionResult<WatchlistExportDto>> ExportWatchlist(int id)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _watchlistService.ExportWatchlistAsync(userId.Value, id);
+        if (!result.Success)
+        {
+            if (result.StatusCode == 403) return Forbid();
+            return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
+        }
+        return Ok(result.Data);
+    }
+
+    [HttpPost("import")]
+    public async Task<ActionResult<WatchlistImportResultDto>> ImportWatchlist([FromBody] WatchlistImportDto dto)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _watchlistService.ImportWatchlistAsync(userId.Value, dto);
+        if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
+        return Ok(result.Data);
+    }
 }
