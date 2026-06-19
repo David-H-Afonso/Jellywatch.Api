@@ -13,15 +13,21 @@ public class SettingsService : ISettingsService
     private readonly JellywatchDbContext _context;
     private readonly TmdbSettings _tmdbSettings;
     private readonly OmdbSettings _omdbSettings;
+    private readonly SonarrSettings _sonarrSettings;
+    private readonly RadarrSettings _radarrSettings;
 
     public SettingsService(
         JellywatchDbContext context,
         IOptions<TmdbSettings> tmdbSettings,
-        IOptions<OmdbSettings> omdbSettings)
+        IOptions<OmdbSettings> omdbSettings,
+        IOptions<SonarrSettings> sonarrSettings,
+        IOptions<RadarrSettings> radarrSettings)
     {
         _context = context;
         _tmdbSettings = tmdbSettings.Value;
         _omdbSettings = omdbSettings.Value;
+        _sonarrSettings = sonarrSettings.Value;
+        _radarrSettings = radarrSettings.Value;
     }
 
     public ServiceResult<ProviderSettingsDto> GetProviderSettings()
@@ -33,6 +39,8 @@ public class SettingsService : ISettingsService
             OmdbEnabled = !string.IsNullOrWhiteSpace(_omdbSettings.ApiKey),
             OmdbHasApiKey = !string.IsNullOrWhiteSpace(_omdbSettings.ApiKey),
             TvMazeEnabled = true,
+            SonarrEnabled = !string.IsNullOrWhiteSpace(_sonarrSettings.BaseUrl) && !string.IsNullOrWhiteSpace(_sonarrSettings.ApiKey),
+            RadarrEnabled = !string.IsNullOrWhiteSpace(_radarrSettings.BaseUrl) && !string.IsNullOrWhiteSpace(_radarrSettings.ApiKey),
             PrimaryLanguage = _tmdbSettings.PrimaryLanguage,
             FallbackLanguage = _tmdbSettings.FallbackLanguage
         });

@@ -67,6 +67,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Jellywatch.Api.Infrastructure.BackgroundJobs.BackupScheduleService>();
         services.AddHostedService(sp => sp.GetRequiredService<Jellywatch.Api.Infrastructure.BackgroundJobs.BackupScheduleService>());
 
+        services.AddScoped<RadarrApiClient>();
+        services.AddScoped<SonarrApiClient>();
+
         return services;
     }
 
@@ -93,6 +96,12 @@ public static class ServiceCollectionExtensions
             {
                 AllowAutoRedirect = false // Prevent redirect-based SSRF
             });
+
+        services.AddHttpClient("RadarrClient")
+            .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(10));
+
+        services.AddHttpClient("SonarrClient")
+            .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(10));
 
         services.AddHttpContextAccessor();
 
@@ -285,6 +294,15 @@ public static class ServiceCollectionExtensions
         builder.Configuration["OmdbSettings:ApiKey"] = Environment.GetEnvironmentVariable("OMDB_API_KEY")
             ?? builder.Configuration["OmdbSettings:ApiKey"];
 
+        builder.Configuration["SonarrSettings:BaseUrl"] = Environment.GetEnvironmentVariable("SONARR_BASE_URL")
+            ?? builder.Configuration["SonarrSettings:BaseUrl"];
+        builder.Configuration["SonarrSettings:ApiKey"] = Environment.GetEnvironmentVariable("SONARR_API_KEY")
+            ?? builder.Configuration["SonarrSettings:ApiKey"];
+        builder.Configuration["RadarrSettings:BaseUrl"] = Environment.GetEnvironmentVariable("RADARR_BASE_URL")
+            ?? builder.Configuration["RadarrSettings:BaseUrl"];
+        builder.Configuration["RadarrSettings:ApiKey"] = Environment.GetEnvironmentVariable("RADARR_API_KEY")
+            ?? builder.Configuration["RadarrSettings:ApiKey"];
+
         builder.Configuration["DatabaseSettings:DatabasePath"] = Environment.GetEnvironmentVariable("DATABASE_PATH")
             ?? builder.Configuration["DatabaseSettings:DatabasePath"];
 
@@ -307,5 +325,7 @@ public static class ServiceCollectionExtensions
         services.Configure<DatabaseSettings>(configuration.GetSection(DatabaseSettings.SectionName));
         services.Configure<TmdbSettings>(configuration.GetSection(TmdbSettings.SectionName));
         services.Configure<OmdbSettings>(configuration.GetSection(OmdbSettings.SectionName));
+        services.Configure<SonarrSettings>(configuration.GetSection(SonarrSettings.SectionName));
+        services.Configure<RadarrSettings>(configuration.GetSection(RadarrSettings.SectionName));
     }
 }

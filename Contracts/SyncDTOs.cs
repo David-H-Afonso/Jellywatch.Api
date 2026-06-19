@@ -22,6 +22,8 @@ public class ProviderSettingsDto
     public bool OmdbEnabled { get; set; }
     public bool OmdbHasApiKey { get; set; }
     public bool TvMazeEnabled { get; set; }
+    public bool SonarrEnabled { get; set; }
+    public bool RadarrEnabled { get; set; }
     public string PrimaryLanguage { get; set; } = "en-US";
     public string? FallbackLanguage { get; set; }
 }
