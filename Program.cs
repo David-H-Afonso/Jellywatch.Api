@@ -35,6 +35,13 @@ app.UseSwaggerUI(c =>
 
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
+// Security headers — prevent MIME-sniffing of uploaded/served files
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    await next();
+});
+
 try
 {
     using (var scope = app.Services.CreateScope())

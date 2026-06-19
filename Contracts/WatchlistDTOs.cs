@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Jellywatch.Api.Domain.Enums;
 
 namespace Jellywatch.Api.Contracts;
@@ -15,6 +16,7 @@ public class WatchlistSummaryDto
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
+    public string? CoverUrl { get; set; }
     public WatchlistState State { get; set; }
     public int OwnerUserId { get; set; }
     public string OwnerUsername { get; set; } = string.Empty;
@@ -186,6 +188,13 @@ public class CreateWatchlistAccessRequestDto
 public class SetDefaultWatchlistDto
 {
     public int? WatchlistId { get; set; }
+}
+
+public class SetWatchlistCoverDto
+{
+    [Required(ErrorMessage = "URL is required")]
+    [Url(ErrorMessage = "A valid URL is required")]
+    public string Url { get; set; } = string.Empty;
 }
 
 // ━━━━ IMPORT / EXPORT ━━━━

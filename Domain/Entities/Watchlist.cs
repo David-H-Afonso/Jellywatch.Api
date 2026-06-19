@@ -7,6 +7,7 @@ public class Watchlist
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
+    public string? CoverImagePath { get; set; }
     public int OwnerUserId { get; set; }
     public WatchlistState State { get; set; } = WatchlistState.Pending;
     public DateTime CreatedAt { get; set; }

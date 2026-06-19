@@ -87,6 +87,13 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient("AssetClient")
             .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(30));
 
+        services.AddHttpClient("CoverClient")
+            .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AllowAutoRedirect = false // Prevent redirect-based SSRF
+            });
+
         services.AddHttpContextAccessor();
 
         return services;

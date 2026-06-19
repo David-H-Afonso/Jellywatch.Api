@@ -360,6 +360,7 @@ public static class DatabaseStartupHelper
         await AddColumnIfMissingAsync(connection, "watchlist", "state", "INTEGER NOT NULL DEFAULT 0", logger);
         await AddColumnIfMissingAsync(connection, "watchlist", "created_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
         await AddColumnIfMissingAsync(connection, "watchlist", "updated_at", "TEXT NOT NULL DEFAULT '0001-01-01T00:00:00.0000000'", logger);
+        await AddColumnIfMissingAsync(connection, "watchlist", "cover_image_path", "TEXT", logger);
 
         await ExecuteNonQueryAsync(connection, """
             CREATE TABLE IF NOT EXISTS "user_watchlist_preference" (
