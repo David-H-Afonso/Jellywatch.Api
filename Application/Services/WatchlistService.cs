@@ -770,12 +770,15 @@ public class WatchlistService : IWatchlistService
             ? new List<WatchlistItemDto>()
             : await MapItemsAsync(watchlist.Items.OrderBy(i => i.Position).ToList(), userId, profileId, depth, path);
 
+        var hasCover = watchlist.CoverImagePath != null
+            || watchlist.Items.Any(i => i.MediaItem != null);
+
         return new WatchlistChildDto
         {
             Id = watchlist.Id,
             Name = watchlist.Name,
             Description = watchlist.Description,
-            CoverUrl = watchlist.CoverImagePath != null ? $"/api/watchlists/{watchlist.Id}/cover" : null,
+            CoverUrl = hasCover ? $"/api/watchlists/{watchlist.Id}/cover" : null,
             State = watchlist.State,
             HasFullAccess = hasFullAccess,
             CanRequestAccess = hasParentAccess && !hasFullAccess && !hasPendingRequest,
@@ -798,12 +801,15 @@ public class WatchlistService : IWatchlistService
         var items = await MapItemsAsync(watchlist.Items.OrderBy(i => i.Position).ToList(), userId, profileId, depth, path);
         path.Remove(watchlistId);
 
+        var hasCover = watchlist.CoverImagePath != null
+            || watchlist.Items.Any(i => i.MediaItem != null);
+
         return new WatchlistChildDto
         {
             Id = watchlist.Id,
             Name = watchlist.Name,
             Description = watchlist.Description,
-            CoverUrl = watchlist.CoverImagePath != null ? $"/api/watchlists/{watchlist.Id}/cover" : null,
+            CoverUrl = hasCover ? $"/api/watchlists/{watchlist.Id}/cover" : null,
             State = watchlist.State,
             HasFullAccess = hasFullAccess,
             CanRequestAccess = !hasFullAccess && !hasPendingRequest,
