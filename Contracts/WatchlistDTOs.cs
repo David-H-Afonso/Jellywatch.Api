@@ -99,6 +99,7 @@ public class WatchlistChildDto
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
+    public string? CoverUrl { get; set; }
     public WatchlistState State { get; set; }
     public bool HasFullAccess { get; set; }
     public bool CanRequestAccess { get; set; }

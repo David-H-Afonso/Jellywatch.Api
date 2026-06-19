@@ -161,6 +161,64 @@ public class MediaSearchController : BaseApiController
             title = mediaItem.Title
         });
     }
+
+    /// <summary>
+    /// Resolves a TMDB item into global media without adding it to any profile.
+    /// </summary>
+    [HttpPost("resolve")]
+    public async Task<ActionResult> Resolve([FromBody] ResolveMediaDto dto)
+    {
+        if (dto.TmdbId <= 0)
+            return BadRequest(new { message = "A valid TMDB ID is required" });
+
+        if (dto.Type != "series" && dto.Type != "movie")
+            return BadRequest(new { message = "Type must be 'series' or 'movie'" });
+
+        var mediaItem = await _context.MediaItems
+            .FirstOrDefaultAsync(m => m.TmdbId == dto.TmdbId && m.MediaType == (dto.Type == "series" ? MediaType.Series : MediaType.Movie));
+
+        if (mediaItem != null)
+            return Ok(new { mediaItemId = mediaItem.Id, title = mediaItem.Title });
+
+        if (!_tmdbClient.IsConfigured)
+            return BadRequest(new { message = "TMDB is not configured" });
+
+        var syntheticId = $"resolve_{dto.Type}_{dto.TmdbId}";
+        if (dto.Type == "series")
+        {
+            mediaItem = await _metadata.ResolveSeriesAsync(syntheticId, "Resolve", tmdbId: dto.TmdbId);
+            if (mediaItem is null)
+                return NotFound(new { message = $"Could not find series with TMDB ID {dto.TmdbId}" });
+
+            var series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+            if (series is null)
+            {
+                _context.Series.Add(new Series { MediaItemId = mediaItem.Id });
+                await _context.SaveChangesAsync();
+                series = await _context.Series.FirstOrDefaultAsync(s => s.MediaItemId == mediaItem.Id);
+            }
+            if (series != null)
+                await _metadata.PopulateSeasonsAndEpisodesAsync(series.Id);
+        }
+        else
+        {
+            mediaItem = await _metadata.ResolveMovieAsync(syntheticId, "Resolve", tmdbId: dto.TmdbId);
+            if (mediaItem is null)
+                return NotFound(new { message = $"Could not find movie with TMDB ID {dto.TmdbId}" });
+
+            var movie = await _context.Movies.FirstOrDefaultAsync(m => m.MediaItemId == mediaItem.Id);
+            if (movie is null)
+            {
+                _context.Movies.Add(new Movie { MediaItemId = mediaItem.Id });
+                await _context.SaveChangesAsync();
+            }
+        }
+
+        await _metadata.RefreshTranslationsAsync(mediaItem.Id);
+        await _metadata.RefreshImagesAsync(mediaItem.Id);
+
+        return Ok(new { mediaItemId = mediaItem.Id, title = mediaItem.Title });
+    }
 }
 
 public class ManualAddDto
@@ -168,4 +226,10 @@ public class ManualAddDto
     public int TmdbId { get; set; }
     public string Type { get; set; } = "series";
     public int ProfileId { get; set; }
+}
+
+public class ResolveMediaDto
+{
+    public int TmdbId { get; set; }
+    public string Type { get; set; } = "series";
 }
