@@ -27,8 +27,7 @@ public class SonarrApiClient : IArrAvailabilityClient
     }
 
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(_settings.BaseUrl) &&
-        !string.IsNullOrWhiteSpace(_settings.ApiKey);
+        !string.IsNullOrWhiteSpace(_settings.BaseUrl);
 
     public Task<ArrMediaStatus?> GetMovieStatusAsync(int tmdbId)
     {
@@ -44,7 +43,8 @@ public class SonarrApiClient : IArrAvailabilityClient
         {
             var url = $"{_settings.BaseUrl!.TrimEnd('/')}/api/v3/series?tvdbId={tvdbId}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("X-Api-Key", _settings.ApiKey);
+            if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
+                request.Headers.Add("X-Api-Key", _settings.ApiKey);
 
             using var response = await _httpClient.SendAsync(request);
 

@@ -27,8 +27,7 @@ public class RadarrApiClient : IArrAvailabilityClient
     }
 
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(_settings.BaseUrl) &&
-        !string.IsNullOrWhiteSpace(_settings.ApiKey);
+        !string.IsNullOrWhiteSpace(_settings.BaseUrl);
 
     public async Task<ArrMediaStatus?> GetMovieStatusAsync(int tmdbId)
     {
@@ -38,7 +37,8 @@ public class RadarrApiClient : IArrAvailabilityClient
         {
             var url = $"{_settings.BaseUrl!.TrimEnd('/')}/api/v3/movie?tmdbId={tmdbId}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("X-Api-Key", _settings.ApiKey);
+            if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
+                request.Headers.Add("X-Api-Key", _settings.ApiKey);
 
             using var response = await _httpClient.SendAsync(request);
 

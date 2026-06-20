@@ -295,10 +295,12 @@ public static class ServiceCollectionExtensions
             ?? builder.Configuration["OmdbSettings:ApiKey"];
 
         builder.Configuration["SonarrSettings:BaseUrl"] = Environment.GetEnvironmentVariable("SONARR_BASE_URL")
+            ?? Environment.GetEnvironmentVariable("SONARR_URL")
             ?? builder.Configuration["SonarrSettings:BaseUrl"];
         builder.Configuration["SonarrSettings:ApiKey"] = Environment.GetEnvironmentVariable("SONARR_API_KEY")
             ?? builder.Configuration["SonarrSettings:ApiKey"];
         builder.Configuration["RadarrSettings:BaseUrl"] = Environment.GetEnvironmentVariable("RADARR_BASE_URL")
+            ?? Environment.GetEnvironmentVariable("RADARR_URL")
             ?? builder.Configuration["RadarrSettings:BaseUrl"];
         builder.Configuration["RadarrSettings:ApiKey"] = Environment.GetEnvironmentVariable("RADARR_API_KEY")
             ?? builder.Configuration["RadarrSettings:ApiKey"];
