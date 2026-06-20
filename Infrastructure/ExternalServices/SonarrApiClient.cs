@@ -37,11 +37,22 @@ public class SonarrApiClient : IArrAvailabilityClient
 
     public async Task<ArrMediaStatus?> GetSeriesStatusAsync(int tvdbId)
     {
+        return await QuerySonarrAsync($"tvdbId={tvdbId}", tvdbId.ToString());
+    }
+
+    /// <summary>Fallback lookup for series that don't have a TVDB ID — Sonarr v4+ supports tmdbId.</summary>
+    public async Task<ArrMediaStatus?> GetSeriesStatusByTmdbAsync(int tmdbId)
+    {
+        return await QuerySonarrAsync($"tmdbId={tmdbId}", $"tmdb:{tmdbId}");
+    }
+
+    private async Task<ArrMediaStatus?> QuerySonarrAsync(string queryParam, string logLabel)
+    {
         if (!IsConfigured) return null;
 
         try
         {
-            var url = $"{_settings.BaseUrl!.TrimEnd('/')}/api/v3/series?tvdbId={tvdbId}";
+            var url = $"{_settings.BaseUrl!.TrimEnd('/')}/api/v3/series?{queryParam}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
                 request.Headers.Add("X-Api-Key", _settings.ApiKey);
@@ -75,7 +86,7 @@ public class SonarrApiClient : IArrAvailabilityClient
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to query Sonarr for tvdbId={TvdbId}", tvdbId);
+            _logger.LogWarning(ex, "Failed to query Sonarr for {Label}", logLabel);
             return null;
         }
     }

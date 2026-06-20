@@ -62,10 +62,17 @@ public class MediaAvailabilityController : BaseApiController
 
         if (mediaItem.MediaType == MediaType.Series)
         {
-            if (!_sonarr.IsConfigured || !mediaItem.TvdbId.HasValue)
+            if (!_sonarr.IsConfigured || (!mediaItem.TvdbId.HasValue && !mediaItem.TmdbId.HasValue))
                 return Ok(new { configured = _sonarr.IsConfigured, availability = (MediaAvailabilityDto?)null });
 
-            var status = await _sonarr.GetSeriesStatusAsync(mediaItem.TvdbId.Value);
+            ArrMediaStatus? status = null;
+            if (mediaItem.TvdbId.HasValue)
+                status = await _sonarr.GetSeriesStatusAsync(mediaItem.TvdbId.Value);
+
+            // Sonarr v4+ supports tmdbId lookup — use as fallback when TvdbId is absent or not found
+            if (status is null && mediaItem.TmdbId.HasValue)
+                status = await _sonarr.GetSeriesStatusByTmdbAsync(mediaItem.TmdbId.Value);
+
             if (status is null)
                 return Ok(new { configured = true, availability = (MediaAvailabilityDto?)null });
 
