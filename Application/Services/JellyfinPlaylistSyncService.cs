@@ -98,7 +98,10 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
         if (watchlist.JellyfinPlaylistId is not null)
             return ServiceResult.Fail("Watchlist already linked to a Jellyfin playlist", 409);
 
-        var jellyfinItemIds = await ResolveJellyfinItemIdsAsync(watchlist.Items);
+        var jellyfinItemIds = await ResolveJellyfinItemIdsAsync(watchlist.Items, jellyfinUserId);
+
+        if (jellyfinItemIds.Count == 0)
+            return ServiceResult.Fail("No items could be resolved to Jellyfin library items", 400);
 
         var playlistId = await _jellyfinClient.CreatePlaylistAsync(
             watchlist.Name,
@@ -109,6 +112,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             return ServiceResult.Fail("Failed to create playlist in Jellyfin", 502);
 
         watchlist.JellyfinPlaylistId = playlistId;
+        watchlist.JellyfinPlaylistUserId = jellyfinUserId;
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Created Jellyfin playlist {PlaylistId} for watchlist {WatchlistId}", playlistId, watchlistId);
@@ -127,15 +131,17 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
         if (watchlist.JellyfinPlaylistId is null)
             return ServiceResult.Fail("Watchlist is not linked to a Jellyfin playlist", 400);
 
-        var jellyfinItemIds = await ResolveJellyfinItemIdsAsync(watchlist.Items);
-
-        // Jellyfin 10.9+ requires user context for POST /Playlists/{id}.
-        // Workaround: delete old playlist and recreate with new items.
-        var jellyfinUserId = await GetAnyJellyfinUserIdAsync();
+        // Use the same Jellyfin user that originally created the playlist
+        var jellyfinUserId = watchlist.JellyfinPlaylistUserId ?? await GetAnyJellyfinUserIdAsync();
         if (jellyfinUserId is null)
             return ServiceResult.Fail("No Jellyfin user configured", 400);
 
-        await _jellyfinClient.DeletePlaylistAsync(watchlist.JellyfinPlaylistId);
+        var jellyfinItemIds = await ResolveJellyfinItemIdsAsync(watchlist.Items, jellyfinUserId);
+
+        // Jellyfin 10.9+ requires user context for POST /Playlists/{id}.
+        // Workaround: delete old playlist and recreate with new items.
+        var oldPlaylistId = watchlist.JellyfinPlaylistId;
+        await _jellyfinClient.DeletePlaylistAsync(oldPlaylistId);
 
         var newPlaylistId = await _jellyfinClient.CreatePlaylistAsync(
             watchlist.Name,
@@ -143,13 +149,22 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             jellyfinUserId);
 
         if (newPlaylistId is null)
-            return ServiceResult.Fail("Failed to recreate playlist in Jellyfin", 502);
+        {
+            // Old playlist is gone; clear stale reference
+            watchlist.JellyfinPlaylistId = null;
+            watchlist.JellyfinPlaylistUserId = null;
+            await _context.SaveChangesAsync();
+            _logger.LogError("Deleted old playlist {OldId} but failed to recreate for watchlist {WatchlistId}. Playlist unlinked.",
+                oldPlaylistId, watchlistId);
+            return ServiceResult.Fail("Failed to recreate playlist in Jellyfin. Playlist has been unlinked.", 502);
+        }
 
         watchlist.JellyfinPlaylistId = newPlaylistId;
+        watchlist.JellyfinPlaylistUserId = jellyfinUserId;
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation("Re-synced Jellyfin playlist {PlaylistId} for watchlist {WatchlistId} with {Count} items",
-            newPlaylistId, watchlistId, jellyfinItemIds.Count);
+        _logger.LogInformation("Re-synced Jellyfin playlist {PlaylistId} for watchlist {WatchlistId} with {Count} items (user: {UserId})",
+            newPlaylistId, watchlistId, jellyfinItemIds.Count, jellyfinUserId);
         return ServiceResult.Ok();
     }
 
@@ -167,19 +182,20 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             _logger.LogWarning("Failed to delete Jellyfin playlist {PlaylistId}, unlinking anyway", watchlist.JellyfinPlaylistId);
 
         watchlist.JellyfinPlaylistId = null;
+        watchlist.JellyfinPlaylistUserId = null;
         await _context.SaveChangesAsync();
 
         return ServiceResult.Ok();
     }
 
-    private async Task<List<string>> ResolveJellyfinItemIdsAsync(IEnumerable<Domain.Entities.WatchlistItem> items)
+    private async Task<List<string>> ResolveJellyfinItemIdsAsync(IEnumerable<Domain.Entities.WatchlistItem> items, string? targetJellyfinUserId = null)
     {
         var mediaItemIds = items
             .Where(i => i.MediaItemId.HasValue)
             .Select(i => i.MediaItemId!.Value)
             .ToList();
 
-        var jellyfinMap = await BuildJellyfinMapAsync(mediaItemIds);
+        var jellyfinMap = await BuildJellyfinMapAsync(mediaItemIds, targetJellyfinUserId);
 
         return items
             .Where(i => i.MediaItemId.HasValue && jellyfinMap.ContainsKey(i.MediaItemId.Value))
@@ -187,13 +203,13 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             .ToList();
     }
 
-    private Task<Dictionary<int, string>> BuildJellyfinMapAsync(IEnumerable<Domain.Entities.WatchlistItem> items)
+    private Task<Dictionary<int, string>> BuildJellyfinMapAsync(IEnumerable<Domain.Entities.WatchlistItem> items, string? targetJellyfinUserId = null)
     {
         var mediaItemIds = items
             .Where(i => i.MediaItemId.HasValue)
             .Select(i => i.MediaItemId!.Value)
             .ToList();
-        return BuildJellyfinMapAsync(mediaItemIds);
+        return BuildJellyfinMapAsync(mediaItemIds, targetJellyfinUserId);
     }
 
     /// <summary>
@@ -202,7 +218,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
     /// Step 2: Match by provider IDs in the DB.
     /// Step 3: Query Jellyfin API directly as final fallback.
     /// </summary>
-    private async Task<Dictionary<int, string>> BuildJellyfinMapAsync(List<int> mediaItemIds)
+    private async Task<Dictionary<int, string>> BuildJellyfinMapAsync(List<int> mediaItemIds, string? targetJellyfinUserId = null)
     {
         if (mediaItemIds.Count == 0)
             return new Dictionary<int, string>();
@@ -266,7 +282,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
         {
             try
             {
-                var jellyfinUserId = await GetAnyJellyfinUserIdAsync();
+                var jellyfinUserId = targetJellyfinUserId ?? await GetAnyJellyfinUserIdAsync();
                 if (jellyfinUserId is not null)
                 {
                     var allJellyfinItems = await _jellyfinClient.GetItemsAsync(

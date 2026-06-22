@@ -134,6 +134,10 @@ public static class DatabaseStartupHelper
         // jellyfin_playlist_id — new column for Jellyfin playlist sync
         await AddColumnIfMissingAsync(connection, "watchlist", "jellyfin_playlist_id", "TEXT", logger);
         await RecordMigrationIfMissingAsync(connection, "20260622121927_AddWatchlistJellyfinPlaylistId", logger);
+
+        // jellyfin_playlist_user_id — store which Jellyfin user owns the synced playlist
+        await AddColumnIfMissingAsync(connection, "watchlist", "jellyfin_playlist_user_id", "TEXT", logger);
+        await RecordMigrationIfMissingAsync(connection, "20260622142154_AddWatchlistJellyfinPlaylistUserId", logger);
     }
 
     static async Task EnsureBlacklistedItemsSchemaAsync(DbConnection connection, ILogger logger)

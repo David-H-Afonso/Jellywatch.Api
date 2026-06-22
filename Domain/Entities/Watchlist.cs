@@ -9,6 +9,7 @@ public class Watchlist
     public string? Description { get; set; }
     public string? CoverImagePath { get; set; }
     public string? JellyfinPlaylistId { get; set; }
+    public string? JellyfinPlaylistUserId { get; set; }
     public int OwnerUserId { get; set; }
     public WatchlistState State { get; set; } = WatchlistState.Pending;
     public DateTime CreatedAt { get; set; }
