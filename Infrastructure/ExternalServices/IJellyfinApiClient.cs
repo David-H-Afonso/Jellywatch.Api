@@ -22,7 +22,6 @@ public interface IJellyfinApiClient
 
     // Playlist management
     Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId);
-    Task<bool> UpdatePlaylistItemsAsync(string playlistId, IEnumerable<string> jellyfinItemIds);
     Task<bool> DeletePlaylistAsync(string playlistId);
 }
 

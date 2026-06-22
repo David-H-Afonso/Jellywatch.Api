@@ -289,25 +289,6 @@ public class JellyfinApiClient : IJellyfinApiClient
         return doc.RootElement.TryGetProperty("Id", out var id) ? id.GetString() : null;
     }
 
-    public async Task<bool> UpdatePlaylistItemsAsync(string playlistId, IEnumerable<string> jellyfinItemIds)
-    {
-        var client = CreateAuthenticatedClient();
-        var payload = JsonSerializer.Serialize(new
-        {
-            Ids = jellyfinItemIds.ToArray()
-        }, JsonOptions);
-        var content = new StringContent(payload, Encoding.UTF8, "application/json");
-
-        var response = await client.PostAsync($"/Playlists/{playlistId}", content);
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning("Failed to update Jellyfin playlist {PlaylistId}: {Status}", playlistId, response.StatusCode);
-            return false;
-        }
-
-        return true;
-    }
-
     public async Task<bool> DeletePlaylistAsync(string playlistId)
     {
         var client = CreateAuthenticatedClient();

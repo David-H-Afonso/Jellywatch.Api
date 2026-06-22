@@ -129,11 +129,27 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
 
         var jellyfinItemIds = await ResolveJellyfinItemIdsAsync(watchlist.Items);
 
-        var success = await _jellyfinClient.UpdatePlaylistItemsAsync(watchlist.JellyfinPlaylistId, jellyfinItemIds);
-        if (!success)
-            return ServiceResult.Fail("Failed to sync playlist with Jellyfin", 502);
+        // Jellyfin 10.9+ requires user context for POST /Playlists/{id}.
+        // Workaround: delete old playlist and recreate with new items.
+        var jellyfinUserId = await GetAnyJellyfinUserIdAsync();
+        if (jellyfinUserId is null)
+            return ServiceResult.Fail("No Jellyfin user configured", 400);
 
-        _logger.LogInformation("Synced Jellyfin playlist {PlaylistId} with {Count} items", watchlist.JellyfinPlaylistId, jellyfinItemIds.Count);
+        await _jellyfinClient.DeletePlaylistAsync(watchlist.JellyfinPlaylistId);
+
+        var newPlaylistId = await _jellyfinClient.CreatePlaylistAsync(
+            watchlist.Name,
+            jellyfinItemIds,
+            jellyfinUserId);
+
+        if (newPlaylistId is null)
+            return ServiceResult.Fail("Failed to recreate playlist in Jellyfin", 502);
+
+        watchlist.JellyfinPlaylistId = newPlaylistId;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("Re-synced Jellyfin playlist {PlaylistId} for watchlist {WatchlistId} with {Count} items",
+            newPlaylistId, watchlistId, jellyfinItemIds.Count);
         return ServiceResult.Ok();
     }
 
