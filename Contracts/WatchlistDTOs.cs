@@ -17,6 +17,7 @@ public class WatchlistSummaryDto
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
     public string? CoverUrl { get; set; }
+    public string? JellyfinPlaylistId { get; set; }
     public WatchlistState State { get; set; }
     public int OwnerUserId { get; set; }
     public string OwnerUsername { get; set; } = string.Empty;
@@ -218,6 +219,11 @@ public class WatchlistExportItemDto
     public string? ImdbId { get; set; }
     public string Status { get; set; } = string.Empty;
     public int Position { get; set; }
+}
+
+public class CreatePlaylistSyncRequest
+{
+    public string JellyfinUserId { get; set; } = string.Empty;
 }
 
 public class WatchlistImportDto

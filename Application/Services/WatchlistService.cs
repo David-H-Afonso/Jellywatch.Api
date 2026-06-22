@@ -12,12 +12,14 @@ public class WatchlistService : IWatchlistService
     private const int MaxNestedDepth = 5;
     private readonly JellywatchDbContext _context;
     private readonly IMetadataResolutionService _metadata;
+    private readonly IJellyfinPlaylistSyncService _playlistSync;
     private readonly ILogger<WatchlistService> _logger;
 
-    public WatchlistService(JellywatchDbContext context, IMetadataResolutionService metadata, ILogger<WatchlistService> logger)
+    public WatchlistService(JellywatchDbContext context, IMetadataResolutionService metadata, IJellyfinPlaylistSyncService playlistSync, ILogger<WatchlistService> logger)
     {
         _context = context;
         _metadata = metadata;
+        _playlistSync = playlistSync;
         _logger = logger;
     }
 
@@ -275,6 +277,7 @@ public class WatchlistService : IWatchlistService
         var itemResult = await AddItemInternalAsync(watchlistId, dto, currentUserId);
         if (itemResult is not null) return itemResult;
 
+        _ = TriggerPlaylistSyncAsync(watchlistId);
         return ServiceResult.Ok();
     }
 
@@ -314,6 +317,7 @@ public class WatchlistService : IWatchlistService
         await _context.SaveChangesAsync();
         await NormalizePositionsAsync(watchlistId);
 
+        _ = TriggerPlaylistSyncAsync(watchlistId);
         return ServiceResult.Ok();
     }
 
@@ -336,6 +340,8 @@ public class WatchlistService : IWatchlistService
             item.Position = positionMap[item.Id];
 
         await _context.SaveChangesAsync();
+
+        _ = TriggerPlaylistSyncAsync(watchlistId);
         return ServiceResult.Ok();
     }
 
@@ -677,6 +683,7 @@ public class WatchlistService : IWatchlistService
             Name = watchlist.Name,
             Description = watchlist.Description,
             CoverUrl = $"/api/watchlists/{watchlist.Id}/cover",
+            JellyfinPlaylistId = watchlist.JellyfinPlaylistId,
             State = watchlist.State,
             OwnerUserId = watchlist.OwnerUserId,
             OwnerUsername = watchlist.OwnerUser.Username,
@@ -699,6 +706,7 @@ public class WatchlistService : IWatchlistService
             Name = watchlist.Name,
             Description = watchlist.Description,
             CoverUrl = $"/api/watchlists/{watchlist.Id}/cover",
+            JellyfinPlaylistId = watchlist.JellyfinPlaylistId,
             State = watchlist.State,
             OwnerUserId = watchlist.OwnerUserId,
             OwnerUsername = watchlist.OwnerUser.Username,
@@ -1191,5 +1199,19 @@ public class WatchlistService : IWatchlistService
             SkippedItems = skipped,
             Errors = errors.Take(50).ToList(),
         });
+    }
+
+    private async Task TriggerPlaylistSyncAsync(int watchlistId)
+    {
+        try
+        {
+            var watchlist = await _context.Watchlists.FindAsync(watchlistId);
+            if (watchlist?.JellyfinPlaylistId is null) return;
+            await _playlistSync.SyncPlaylistAsync(watchlistId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Fire-and-forget playlist sync failed for watchlist {WatchlistId}", watchlistId);
+        }
     }
 }

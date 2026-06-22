@@ -53,6 +53,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWatchStateService, WatchStateService>();
 
         services.AddScoped<IWatchlistService, WatchlistService>();
+        services.AddScoped<IJellyfinPlaylistSyncService, JellyfinPlaylistSyncService>();
 
         services.AddScoped<IMediaQueryService, MediaQueryService>();
         services.AddScoped<IStatsService, StatsService>();

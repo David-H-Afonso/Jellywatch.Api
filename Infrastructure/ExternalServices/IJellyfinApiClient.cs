@@ -19,6 +19,11 @@ public interface IJellyfinApiClient
     Task<JellyfinItemInfo?> GetItemAsync(string itemId);
     Task<JellyfinUserData?> GetUserDataAsync(string userId, string itemId);
     Task<List<JellyfinActivityEntry>> GetActivityLogAsync(DateTime? minDate = null, int limit = 2000);
+
+    // Playlist management
+    Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId, bool isPublic = true);
+    Task<bool> UpdatePlaylistItemsAsync(string playlistId, IEnumerable<string> jellyfinItemIds);
+    Task<bool> DeletePlaylistAsync(string playlistId);
 }
 
 public class JellyfinUserInfo

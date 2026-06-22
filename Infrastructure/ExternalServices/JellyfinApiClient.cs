@@ -263,4 +263,61 @@ public class JellyfinApiClient : IJellyfinApiClient
 
         return info;
     }
+
+    public async Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId, bool isPublic = true)
+    {
+        var client = CreateAuthenticatedClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            Name = name,
+            Ids = jellyfinItemIds.ToArray(),
+            UserId = jellyfinUserId,
+            MediaType = "Video",
+            IsPublic = isPublic
+        }, JsonOptions);
+        var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/Playlists", content);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to create Jellyfin playlist '{Name}': {Status}", name, response.StatusCode);
+            return null;
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty("Id", out var id) ? id.GetString() : null;
+    }
+
+    public async Task<bool> UpdatePlaylistItemsAsync(string playlistId, IEnumerable<string> jellyfinItemIds)
+    {
+        var client = CreateAuthenticatedClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            Ids = jellyfinItemIds.ToArray()
+        }, JsonOptions);
+        var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync($"/Playlists/{playlistId}", content);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to update Jellyfin playlist {PlaylistId}: {Status}", playlistId, response.StatusCode);
+            return false;
+        }
+
+        return true;
+    }
+
+    public async Task<bool> DeletePlaylistAsync(string playlistId)
+    {
+        var client = CreateAuthenticatedClient();
+        var response = await client.DeleteAsync($"/Items/{playlistId}");
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to delete Jellyfin playlist {PlaylistId}: {Status}", playlistId, response.StatusCode);
+            return false;
+        }
+
+        return true;
+    }
 }

@@ -16,13 +16,15 @@ public class WatchlistsController : BaseApiController
     private readonly JellywatchDbContext _context;
     private readonly IAssetCacheService _assetService;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IJellyfinPlaylistSyncService _playlistSyncService;
 
-    public WatchlistsController(IWatchlistService watchlistService, JellywatchDbContext context, IAssetCacheService assetService, IHttpClientFactory httpClientFactory)
+    public WatchlistsController(IWatchlistService watchlistService, JellywatchDbContext context, IAssetCacheService assetService, IHttpClientFactory httpClientFactory, IJellyfinPlaylistSyncService playlistSyncService)
     {
         _watchlistService = watchlistService;
         _context = context;
         _assetService = assetService;
         _httpClientFactory = httpClientFactory;
+        _playlistSyncService = playlistSyncService;
     }
 
     [HttpGet]
@@ -542,6 +544,52 @@ public class WatchlistsController : BaseApiController
         watchlist.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
+        return NoContent();
+    }
+
+    // ━━━━ JELLYFIN PLAYLIST SYNC ━━━━
+
+    [HttpPost("{id}/jellyfin-sync/preview")]
+    public async Task<IActionResult> PreviewPlaylistSync(int id)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _playlistSyncService.PreviewSyncAsync(id);
+        if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
+        return Ok(result.Data);
+    }
+
+    [HttpPost("{id}/jellyfin-sync")]
+    public async Task<IActionResult> CreatePlaylistSync(int id, [FromBody] CreatePlaylistSyncRequest request)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _playlistSyncService.CreatePlaylistFromWatchlistAsync(id, request.JellyfinUserId);
+        if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
+        return Ok(new { message = "Playlist created and synced" });
+    }
+
+    [HttpPost("{id}/jellyfin-sync/resync")]
+    public async Task<IActionResult> ResyncPlaylist(int id)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _playlistSyncService.SyncPlaylistAsync(id);
+        if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
+        return Ok(new { message = "Playlist resynced" });
+    }
+
+    [HttpDelete("{id}/jellyfin-sync")]
+    public async Task<IActionResult> UnlinkPlaylist(int id)
+    {
+        var userId = CurrentUserId;
+        if (!userId.HasValue) return Unauthorized();
+
+        var result = await _playlistSyncService.UnlinkPlaylistAsync(id);
+        if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
         return NoContent();
     }
 
