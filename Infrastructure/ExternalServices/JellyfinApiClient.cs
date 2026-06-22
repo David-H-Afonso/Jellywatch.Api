@@ -264,7 +264,7 @@ public class JellyfinApiClient : IJellyfinApiClient
         return info;
     }
 
-    public async Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId, bool isPublic = true)
+    public async Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId)
     {
         var client = CreateAuthenticatedClient();
         var payload = JsonSerializer.Serialize(new
@@ -273,7 +273,7 @@ public class JellyfinApiClient : IJellyfinApiClient
             Ids = jellyfinItemIds.ToArray(),
             UserId = jellyfinUserId,
             MediaType = "Video",
-            IsPublic = isPublic
+            IsPublic = false
         }, JsonOptions);
         var content = new StringContent(payload, Encoding.UTF8, "application/json");
 

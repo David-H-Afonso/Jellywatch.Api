@@ -365,7 +365,8 @@ public class StatsService : IStatsService
 
     public async Task<ServiceResult<List<UpcomingEpisodeDto>>> GetUpcomingAsync(int profileId, int days, int? currentUserId)
     {
-        var today = DateTime.UtcNow.Date.ToString("yyyy-MM-dd");
+        // Include yesterday to account for timezone differences (frontend filters by user's local day)
+        var startDate = DateTime.UtcNow.Date.AddDays(-1).ToString("yyyy-MM-dd");
         var endDate = DateTime.UtcNow.Date.AddDays(days).ToString("yyyy-MM-dd");
 
         // Get series that the profile has any interaction with:
@@ -405,7 +406,7 @@ public class StatsService : IStatsService
 
         var upcoming = await _context.Set<Domain.Entities.Episode>()
             .Where(ep => ep.AirDate != null
-                && string.Compare(ep.AirDate, today) >= 0
+                && string.Compare(ep.AirDate, startDate) >= 0
                 && string.Compare(ep.AirDate, endDate) <= 0
                 && watchedSeriesMediaItemIds.Contains(ep.Season.Series.MediaItemId)
                 && !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId && b.MediaItemId == ep.Season.Series.MediaItemId))
