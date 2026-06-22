@@ -272,7 +272,6 @@ public class JellyfinApiClient : IJellyfinApiClient
             Name = name,
             Ids = jellyfinItemIds.ToArray(),
             UserId = jellyfinUserId,
-            MediaType = "Video",
             IsPublic = false
         }, JsonOptions);
         var content = new StringContent(payload, Encoding.UTF8, "application/json");
@@ -280,7 +279,8 @@ public class JellyfinApiClient : IJellyfinApiClient
         var response = await client.PostAsync("/Playlists", content);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Failed to create Jellyfin playlist '{Name}': {Status}", name, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("Failed to create Jellyfin playlist '{Name}': {Status} - {Body}", name, response.StatusCode, body);
             return null;
         }
 

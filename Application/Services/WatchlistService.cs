@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Domain.Entities;
@@ -13,13 +14,15 @@ public class WatchlistService : IWatchlistService
     private readonly JellywatchDbContext _context;
     private readonly IMetadataResolutionService _metadata;
     private readonly IJellyfinPlaylistSyncService _playlistSync;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<WatchlistService> _logger;
 
-    public WatchlistService(JellywatchDbContext context, IMetadataResolutionService metadata, IJellyfinPlaylistSyncService playlistSync, ILogger<WatchlistService> logger)
+    public WatchlistService(JellywatchDbContext context, IMetadataResolutionService metadata, IJellyfinPlaylistSyncService playlistSync, IServiceScopeFactory scopeFactory, ILogger<WatchlistService> logger)
     {
         _context = context;
         _metadata = metadata;
         _playlistSync = playlistSync;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -1205,9 +1208,13 @@ public class WatchlistService : IWatchlistService
     {
         try
         {
-            var watchlist = await _context.Watchlists.FindAsync(watchlistId);
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var context = scope.ServiceProvider.GetRequiredService<JellywatchDbContext>();
+            var playlistSync = scope.ServiceProvider.GetRequiredService<IJellyfinPlaylistSyncService>();
+
+            var watchlist = await context.Watchlists.FindAsync(watchlistId);
             if (watchlist?.JellyfinPlaylistId is null) return;
-            await _playlistSync.SyncPlaylistAsync(watchlistId);
+            await playlistSync.SyncPlaylistAsync(watchlistId);
         }
         catch (Exception ex)
         {
