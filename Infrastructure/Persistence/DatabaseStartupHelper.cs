@@ -32,6 +32,7 @@ public static class DatabaseStartupHelper
         await RepairInitialSchemaDriftAsync(connection, logger);
         await RepairBackupScheduleSchemaAsync(connection, logger);
         await RepairWatchlistSchemaAsync(connection, logger);
+        await RepairWatchlistCoverAndSyncColumnsAsync(connection, logger);
     }
 
     static async Task<bool> HasInitialSchemaAsync(DbConnection connection)
@@ -120,6 +121,19 @@ public static class DatabaseStartupHelper
 
         await EnsureWatchlistSchemaAsync(connection, logger);
         await RecordMigrationIfMissingAsync(connection, "20260520095742_AddWatchlistsAndDashboardPreference", logger);
+    }
+
+    static async Task RepairWatchlistCoverAndSyncColumnsAsync(DbConnection connection, ILogger logger)
+    {
+        if (!await TableExistsAsync(connection, "watchlist")) return;
+
+        // cover_image_path — may already exist from manual ALTER or prior run
+        await AddColumnIfMissingAsync(connection, "watchlist", "cover_image_path", "TEXT", logger);
+        await RecordMigrationIfMissingAsync(connection, "20260619190238_AddWatchlistCoverImagePath", logger);
+
+        // jellyfin_playlist_id — new column for Jellyfin playlist sync
+        await AddColumnIfMissingAsync(connection, "watchlist", "jellyfin_playlist_id", "TEXT", logger);
+        await RecordMigrationIfMissingAsync(connection, "20260622121927_AddWatchlistJellyfinPlaylistId", logger);
     }
 
     static async Task EnsureBlacklistedItemsSchemaAsync(DbConnection connection, ILogger logger)
