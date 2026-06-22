@@ -279,7 +279,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
                     .FirstOrDefaultAsync();
             }
 
-            if (jellyfinItemId is not null)
+            if (jellyfinItemId is not null && Guid.TryParse(jellyfinItemId, out _))
             {
                 jellyfinMap[item.Id] = jellyfinItemId;
                 _logger.LogDebug("Resolved MediaItem {MediaItemId} via DB provider ID fallback", item.Id);
@@ -394,6 +394,10 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
                 _logger.LogWarning(ex, "Jellyfin API fallback failed, some items may show as not in library");
             }
         }
+
+        // Final safety: remove any remaining non-GUID entries
+        foreach (var key in jellyfinMap.Where(kv => !Guid.TryParse(kv.Value, out _)).Select(kv => kv.Key).ToList())
+            jellyfinMap.Remove(key);
 
         return jellyfinMap;
     }
