@@ -555,7 +555,7 @@ public class WatchlistsController : BaseApiController
         var userId = CurrentUserId;
         if (!userId.HasValue) return Unauthorized();
 
-        var result = await _playlistSyncService.PreviewSyncAsync(id);
+        var result = await _playlistSyncService.PreviewSyncAsync(id, userId.Value);
         if (!result.Success) return StatusCode(result.StatusCode ?? 400, new { message = result.Error });
         return Ok(result.Data);
     }

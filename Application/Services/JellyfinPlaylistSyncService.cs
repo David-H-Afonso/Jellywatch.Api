@@ -22,7 +22,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
         _logger = logger;
     }
 
-    public async Task<ServiceResult<PlaylistSyncPreviewDto>> PreviewSyncAsync(int watchlistId)
+    public async Task<ServiceResult<PlaylistSyncPreviewDto>> PreviewSyncAsync(int watchlistId, int currentUserId)
     {
         var watchlist = await _context.Watchlists
             .Include(w => w.Items.OrderBy(i => i.Position))
@@ -32,14 +32,7 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
         if (watchlist is null)
             return ServiceResult<PlaylistSyncPreviewDto>.Fail("Watchlist not found", 404);
 
-        var mediaItemIds = watchlist.Items
-            .Where(i => i.MediaItemId.HasValue)
-            .Select(i => i.MediaItemId!.Value)
-            .ToList();
-
-        var jellyfinMap = await _context.JellyfinLibraryItems
-            .Where(j => j.MediaItemId.HasValue && mediaItemIds.Contains(j.MediaItemId.Value))
-            .ToDictionaryAsync(j => j.MediaItemId!.Value, j => j.JellyfinItemId);
+        var jellyfinMap = await BuildJellyfinMapAsync(watchlist.Items);
 
         var syncable = new List<PlaylistSyncItemDto>();
         var skipped = new List<PlaylistSkippedItemDto>();
@@ -75,7 +68,22 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             }
         }
 
-        return ServiceResult<PlaylistSyncPreviewDto>.Ok(new PlaylistSyncPreviewDto(syncable, skipped, watchlist.Items.Count));
+        // Get available profiles for playlist creation
+        var currentUser = await _context.Users.FindAsync(currentUserId);
+        var isAdmin = currentUser?.IsAdmin == true;
+
+        var profiles = await _context.Profiles
+            .Include(p => p.User)
+            .Where(p => p.JellyfinUserId != "" && p.JellyfinUserId != null)
+            .Where(p => isAdmin || p.UserId == currentUserId)
+            .Select(p => new JellyfinTargetProfileDto(
+                p.JellyfinUserId,
+                p.DisplayName,
+                p.User != null ? p.User.Username : ""))
+            .ToListAsync();
+
+        return ServiceResult<PlaylistSyncPreviewDto>.Ok(
+            new PlaylistSyncPreviewDto(syncable, skipped, watchlist.Items.Count, profiles));
     }
 
     public async Task<ServiceResult> CreatePlaylistFromWatchlistAsync(int watchlistId, string jellyfinUserId)
@@ -155,13 +163,83 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             .Select(i => i.MediaItemId!.Value)
             .ToList();
 
-        var jellyfinMap = await _context.JellyfinLibraryItems
-            .Where(j => j.MediaItemId.HasValue && mediaItemIds.Contains(j.MediaItemId.Value))
-            .ToDictionaryAsync(j => j.MediaItemId!.Value, j => j.JellyfinItemId);
+        var jellyfinMap = await BuildJellyfinMapAsync(mediaItemIds);
 
         return items
             .Where(i => i.MediaItemId.HasValue && jellyfinMap.ContainsKey(i.MediaItemId.Value))
             .Select(i => jellyfinMap[i.MediaItemId!.Value])
             .ToList();
+    }
+
+    private Task<Dictionary<int, string>> BuildJellyfinMapAsync(IEnumerable<Domain.Entities.WatchlistItem> items)
+    {
+        var mediaItemIds = items
+            .Where(i => i.MediaItemId.HasValue)
+            .Select(i => i.MediaItemId!.Value)
+            .ToList();
+        return BuildJellyfinMapAsync(mediaItemIds);
+    }
+
+    /// <summary>
+    /// Builds a map of MediaItemId → JellyfinItemId.
+    /// First tries direct link via jellyfin_library_item.media_item_id,
+    /// then falls back to matching by provider IDs (TmdbId, ImdbId).
+    /// </summary>
+    private async Task<Dictionary<int, string>> BuildJellyfinMapAsync(List<int> mediaItemIds)
+    {
+        if (mediaItemIds.Count == 0)
+            return new Dictionary<int, string>();
+
+        // Step 1: Direct media_item_id link
+        var jellyfinMap = await _context.JellyfinLibraryItems
+            .Where(j => j.MediaItemId.HasValue && mediaItemIds.Contains(j.MediaItemId.Value))
+            .GroupBy(j => j.MediaItemId!.Value)
+            .ToDictionaryAsync(g => g.Key, g => g.First().JellyfinItemId);
+
+        // Step 2: For unresolved items, try matching via provider IDs
+        var unresolvedIds = mediaItemIds.Except(jellyfinMap.Keys).ToList();
+        if (unresolvedIds.Count == 0)
+            return jellyfinMap;
+
+        var unresolvedItems = await _context.Set<Domain.Entities.MediaItem>()
+            .Where(m => unresolvedIds.Contains(m.Id))
+            .Select(m => new { m.Id, m.TmdbId, m.ImdbId, m.MediaType })
+            .ToListAsync();
+
+        foreach (var item in unresolvedItems)
+        {
+            if (jellyfinMap.ContainsKey(item.Id)) continue;
+
+            // Try TMDB ID match: find a JellyfinLibraryItem whose linked MediaItem has the same TmdbId
+            string? jellyfinItemId = null;
+
+            if (item.TmdbId.HasValue)
+            {
+                jellyfinItemId = await _context.JellyfinLibraryItems
+                    .Where(j => j.MediaItemId.HasValue && j.MediaItem != null
+                        && j.MediaItem.TmdbId == item.TmdbId
+                        && j.MediaItem.MediaType == item.MediaType)
+                    .Select(j => j.JellyfinItemId)
+                    .FirstOrDefaultAsync();
+            }
+
+            // Try IMDB ID match as fallback
+            if (jellyfinItemId is null && !string.IsNullOrEmpty(item.ImdbId))
+            {
+                jellyfinItemId = await _context.JellyfinLibraryItems
+                    .Where(j => j.MediaItemId.HasValue && j.MediaItem != null
+                        && j.MediaItem.ImdbId == item.ImdbId)
+                    .Select(j => j.JellyfinItemId)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (jellyfinItemId is not null)
+            {
+                jellyfinMap[item.Id] = jellyfinItemId;
+                _logger.LogDebug("Resolved MediaItem {MediaItemId} to Jellyfin item {JellyfinItemId} via provider ID fallback", item.Id, jellyfinItemId);
+            }
+        }
+
+        return jellyfinMap;
     }
 }

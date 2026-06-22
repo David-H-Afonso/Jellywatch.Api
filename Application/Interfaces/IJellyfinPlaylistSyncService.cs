@@ -2,7 +2,7 @@ namespace Jellywatch.Api.Application.Interfaces;
 
 public interface IJellyfinPlaylistSyncService
 {
-    Task<ServiceResult<PlaylistSyncPreviewDto>> PreviewSyncAsync(int watchlistId);
+    Task<ServiceResult<PlaylistSyncPreviewDto>> PreviewSyncAsync(int watchlistId, int currentUserId);
     Task<ServiceResult> CreatePlaylistFromWatchlistAsync(int watchlistId, string jellyfinUserId);
     Task<ServiceResult> SyncPlaylistAsync(int watchlistId);
     Task<ServiceResult> UnlinkPlaylistAsync(int watchlistId);
@@ -11,8 +11,10 @@ public interface IJellyfinPlaylistSyncService
 public record PlaylistSyncPreviewDto(
     List<PlaylistSyncItemDto> SyncableItems,
     List<PlaylistSkippedItemDto> SkippedItems,
-    int TotalWatchlistItems
+    int TotalWatchlistItems,
+    List<JellyfinTargetProfileDto> AvailableProfiles
 );
 
 public record PlaylistSyncItemDto(string Title, string MediaType, int Position, string JellyfinItemId);
 public record PlaylistSkippedItemDto(string Title, string MediaType, int OriginalPosition, string Reason);
+public record JellyfinTargetProfileDto(string JellyfinUserId, string DisplayName, string OwnerUsername);
