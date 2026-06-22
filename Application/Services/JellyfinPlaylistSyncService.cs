@@ -238,6 +238,11 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             .GroupBy(j => j.MediaItemId!.Value)
             .ToDictionaryAsync(g => g.Key, g => g.First().JellyfinItemId);
 
+        // Remove synthetic (non-GUID) entries from the map so they get re-resolved
+        var syntheticEntries = jellyfinMap.Where(kv => !Guid.TryParse(kv.Value, out _)).ToList();
+        foreach (var entry in syntheticEntries)
+            jellyfinMap.Remove(entry.Key);
+
         var unresolvedIds = mediaItemIds.Except(jellyfinMap.Keys).ToList();
         if (unresolvedIds.Count == 0)
             return jellyfinMap;
@@ -330,20 +335,64 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
                             _logger.LogDebug("Resolved MediaItem {MediaItemId} via Jellyfin API lookup", item.Id);
                         }
                     }
+
+                    // Auto-repair synthetic DB records with the real Jellyfin IDs
+                    if (syntheticEntries.Count > 0)
+                    {
+                        var repairedMediaItemIds = syntheticEntries
+                            .Where(e => jellyfinMap.ContainsKey(e.Key))
+                            .Select(e => e.Key)
+                            .ToList();
+
+                        if (repairedMediaItemIds.Count > 0)
+                        {
+                            var dbRecords = await _context.JellyfinLibraryItems
+                                .Where(j => j.MediaItemId.HasValue && repairedMediaItemIds.Contains(j.MediaItemId.Value))
+                                .ToListAsync();
+
+                            foreach (var record in dbRecords)
+                            {
+                                if (record.MediaItemId.HasValue && jellyfinMap.TryGetValue(record.MediaItemId.Value, out var realId)
+                                    && !Guid.TryParse(record.JellyfinItemId, out _))
+                                {
+                                    _logger.LogInformation("Auto-repaired Jellyfin ID for MediaItem {MediaItemId}: '{OldId}' → '{NewId}'",
+                                        record.MediaItemId, record.JellyfinItemId, realId);
+                                    record.JellyfinItemId = realId;
+                                }
+                            }
+
+                            await _context.SaveChangesAsync();
+                        }
+
+                        // Delete synthetic records that couldn't be resolved
+                        var unrepairedMediaItemIds = syntheticEntries
+                            .Where(e => !jellyfinMap.ContainsKey(e.Key))
+                            .Select(e => e.Key)
+                            .ToList();
+
+                        if (unrepairedMediaItemIds.Count > 0)
+                        {
+                            var orphanRecords = await _context.JellyfinLibraryItems
+                                .Where(j => j.MediaItemId.HasValue && unrepairedMediaItemIds.Contains(j.MediaItemId.Value)
+                                    && !string.IsNullOrEmpty(j.JellyfinItemId))
+                                .ToListAsync();
+
+                            var toDelete = orphanRecords.Where(r => !Guid.TryParse(r.JellyfinItemId, out _)).ToList();
+                            if (toDelete.Count > 0)
+                            {
+                                _logger.LogWarning("Deleting {Count} unresolvable synthetic Jellyfin records for MediaItems: [{Ids}]",
+                                    toDelete.Count, string.Join(", ", toDelete.Select(r => r.MediaItemId)));
+                                _context.JellyfinLibraryItems.RemoveRange(toDelete);
+                                await _context.SaveChangesAsync();
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Jellyfin API fallback failed, some items may show as not in library");
             }
-        }
-
-        // Filter out entries with invalid Jellyfin IDs (e.g. synthetic placeholders like "resolve_movie_123")
-        var invalidEntries = jellyfinMap.Where(kv => !Guid.TryParse(kv.Value, out _)).ToList();
-        foreach (var entry in invalidEntries)
-        {
-            _logger.LogWarning("Removing invalid Jellyfin ID '{Id}' for MediaItem {MediaItemId}", entry.Value, entry.Key);
-            jellyfinMap.Remove(entry.Key);
         }
 
         return jellyfinMap;
