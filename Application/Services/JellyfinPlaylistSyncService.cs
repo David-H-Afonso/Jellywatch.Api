@@ -338,6 +338,14 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             }
         }
 
+        // Filter out entries with invalid Jellyfin IDs (e.g. synthetic placeholders like "resolve_movie_123")
+        var invalidEntries = jellyfinMap.Where(kv => !Guid.TryParse(kv.Value, out _)).ToList();
+        foreach (var entry in invalidEntries)
+        {
+            _logger.LogWarning("Removing invalid Jellyfin ID '{Id}' for MediaItem {MediaItemId}", entry.Value, entry.Key);
+            jellyfinMap.Remove(entry.Key);
+        }
+
         return jellyfinMap;
     }
 
