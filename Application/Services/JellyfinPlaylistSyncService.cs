@@ -182,8 +182,9 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
 
     /// <summary>
     /// Builds a map of MediaItemId → JellyfinItemId.
-    /// First tries direct link via jellyfin_library_item.media_item_id,
-    /// then falls back to matching by provider IDs (TmdbId, ImdbId).
+    /// Step 1: Direct link via jellyfin_library_item.media_item_id.
+    /// Step 2: Match by provider IDs in the DB.
+    /// Step 3: Query Jellyfin API directly as final fallback.
     /// </summary>
     private async Task<Dictionary<int, string>> BuildJellyfinMapAsync(List<int> mediaItemIds)
     {
@@ -196,21 +197,21 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             .GroupBy(j => j.MediaItemId!.Value)
             .ToDictionaryAsync(g => g.Key, g => g.First().JellyfinItemId);
 
-        // Step 2: For unresolved items, try matching via provider IDs
         var unresolvedIds = mediaItemIds.Except(jellyfinMap.Keys).ToList();
         if (unresolvedIds.Count == 0)
             return jellyfinMap;
 
+        // Load provider IDs for unresolved items (used in step 2 and 3)
         var unresolvedItems = await _context.Set<Domain.Entities.MediaItem>()
             .Where(m => unresolvedIds.Contains(m.Id))
             .Select(m => new { m.Id, m.TmdbId, m.ImdbId, m.MediaType })
             .ToListAsync();
 
+        // Step 2: Match by provider IDs in the DB
         foreach (var item in unresolvedItems)
         {
             if (jellyfinMap.ContainsKey(item.Id)) continue;
 
-            // Try TMDB ID match: find a JellyfinLibraryItem whose linked MediaItem has the same TmdbId
             string? jellyfinItemId = null;
 
             if (item.TmdbId.HasValue)
@@ -223,7 +224,6 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
                     .FirstOrDefaultAsync();
             }
 
-            // Try IMDB ID match as fallback
             if (jellyfinItemId is null && !string.IsNullOrEmpty(item.ImdbId))
             {
                 jellyfinItemId = await _context.JellyfinLibraryItems
@@ -236,10 +236,75 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
             if (jellyfinItemId is not null)
             {
                 jellyfinMap[item.Id] = jellyfinItemId;
-                _logger.LogDebug("Resolved MediaItem {MediaItemId} to Jellyfin item {JellyfinItemId} via provider ID fallback", item.Id, jellyfinItemId);
+                _logger.LogDebug("Resolved MediaItem {MediaItemId} via DB provider ID fallback", item.Id);
+            }
+        }
+
+        // Step 3: Query Jellyfin API directly for remaining unresolved items
+        unresolvedIds = unresolvedItems
+            .Where(i => !jellyfinMap.ContainsKey(i.Id))
+            .Select(i => i.Id)
+            .ToList();
+
+        if (unresolvedIds.Count > 0)
+        {
+            try
+            {
+                var jellyfinUserId = await GetAnyJellyfinUserIdAsync();
+                if (jellyfinUserId is not null)
+                {
+                    var allJellyfinItems = await _jellyfinClient.GetItemsAsync(
+                        jellyfinUserId, itemTypes: "Movie,Series");
+
+                    // Build provider ID → Jellyfin item ID maps
+                    var tmdbMap = new Dictionary<(int tmdbId, string type), string>();
+                    var imdbMap = new Dictionary<string, string>();
+
+                    foreach (var jfItem in allJellyfinItems)
+                    {
+                        if (jfItem.ProviderIds is null) continue;
+                        var jfType = jfItem.Type == "Movie" ? "Movie" : "Series";
+
+                        if (jfItem.ProviderIds.TryGetValue("Tmdb", out var tmdbStr) && int.TryParse(tmdbStr, out var tmdbId))
+                            tmdbMap.TryAdd((tmdbId, jfType), jfItem.Id);
+
+                        if (jfItem.ProviderIds.TryGetValue("Imdb", out var imdbId) && !string.IsNullOrEmpty(imdbId))
+                            imdbMap.TryAdd(imdbId, jfItem.Id);
+                    }
+
+                    // Match unresolved items
+                    foreach (var item in unresolvedItems.Where(i => !jellyfinMap.ContainsKey(i.Id)))
+                    {
+                        string? resolved = null;
+                        var mediaTypeStr = item.MediaType == MediaType.Movie ? "Movie" : "Series";
+
+                        if (item.TmdbId.HasValue && tmdbMap.TryGetValue((item.TmdbId.Value, mediaTypeStr), out var byTmdb))
+                            resolved = byTmdb;
+                        else if (!string.IsNullOrEmpty(item.ImdbId) && imdbMap.TryGetValue(item.ImdbId, out var byImdb))
+                            resolved = byImdb;
+
+                        if (resolved is not null)
+                        {
+                            jellyfinMap[item.Id] = resolved;
+                            _logger.LogDebug("Resolved MediaItem {MediaItemId} via Jellyfin API lookup", item.Id);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Jellyfin API fallback failed, some items may show as not in library");
             }
         }
 
         return jellyfinMap;
+    }
+
+    private async Task<string?> GetAnyJellyfinUserIdAsync()
+    {
+        return await _context.Profiles
+            .Where(p => p.JellyfinUserId != null && p.JellyfinUserId != "")
+            .Select(p => p.JellyfinUserId)
+            .FirstOrDefaultAsync();
     }
 }
