@@ -266,15 +266,37 @@ public class JellyfinApiClient : IJellyfinApiClient
 
     public async Task<string?> CreatePlaylistAsync(string name, IEnumerable<string> jellyfinItemIds, string jellyfinUserId)
     {
+        // Jellyfin expects Ids as valid GUIDs — normalize format and filter invalid entries
+        var validIds = jellyfinItemIds
+            .Where(id => Guid.TryParse(id, out _))
+            .Select(id => Guid.Parse(id).ToString("N"))
+            .ToArray();
+
+        if (validIds.Length == 0)
+        {
+            _logger.LogWarning("No valid Jellyfin item IDs to create playlist '{Name}'", name);
+            return null;
+        }
+
+        // Also validate the UserId
+        if (!Guid.TryParse(jellyfinUserId, out var userGuid))
+        {
+            _logger.LogWarning("Invalid Jellyfin user ID '{UserId}' for playlist '{Name}'", jellyfinUserId, name);
+            return null;
+        }
+
         var client = CreateAuthenticatedClient();
         var payload = JsonSerializer.Serialize(new
         {
             Name = name,
-            Ids = jellyfinItemIds.ToArray(),
-            UserId = jellyfinUserId,
+            Ids = validIds,
+            UserId = userGuid.ToString("N"),
             IsPublic = false
         }, JsonOptions);
         var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        _logger.LogInformation("Creating Jellyfin playlist '{Name}' with {Count} items for user {UserId}. Ids: [{Ids}]",
+            name, validIds.Length, userGuid.ToString("N"), string.Join(", ", validIds));
 
         var response = await client.PostAsync("/Playlists", content);
         if (!response.IsSuccessStatusCode)

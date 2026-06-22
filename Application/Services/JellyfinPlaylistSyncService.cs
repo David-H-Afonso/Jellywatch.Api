@@ -197,10 +197,19 @@ public class JellyfinPlaylistSyncService : IJellyfinPlaylistSyncService
 
         var jellyfinMap = await BuildJellyfinMapAsync(mediaItemIds, targetJellyfinUserId);
 
-        return items
+        var resolved = items
             .Where(i => i.MediaItemId.HasValue && jellyfinMap.ContainsKey(i.MediaItemId.Value))
             .Select(i => jellyfinMap[i.MediaItemId!.Value])
             .ToList();
+
+        var skippedIds = mediaItemIds.Except(jellyfinMap.Keys).ToList();
+        if (skippedIds.Count > 0)
+            _logger.LogWarning("Could not resolve {Count} media items to Jellyfin IDs: [{Ids}]", skippedIds.Count, string.Join(", ", skippedIds));
+
+        _logger.LogInformation("Resolved {Resolved}/{Total} items. Jellyfin IDs: [{Ids}]",
+            resolved.Count, mediaItemIds.Count, string.Join(", ", resolved));
+
+        return resolved;
     }
 
     private Task<Dictionary<int, string>> BuildJellyfinMapAsync(IEnumerable<Domain.Entities.WatchlistItem> items, string? targetJellyfinUserId = null)
