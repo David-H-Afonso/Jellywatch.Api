@@ -152,6 +152,7 @@ public class ActivityDto
     public int? SeriesId { get; set; }
     public int? MovieId { get; set; }
     public string MediaTitle { get; set; } = string.Empty;
+    public int? EpisodeId { get; set; }
     public string? EpisodeName { get; set; }
     public int? EpisodeNumber { get; set; }
     public int? SeasonNumber { get; set; }

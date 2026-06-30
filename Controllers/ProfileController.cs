@@ -314,6 +314,7 @@ public class ProfileController : BaseApiController
                 SeriesId = seriesId,
                 MovieId = movieId,
                 MediaTitle = e.MediaItem.Title,
+                EpisodeId = e.EpisodeId,
                 EpisodeName = e.Episode?.Name,
                 EpisodeNumber = e.Episode?.EpisodeNumber,
                 SeasonNumber = e.Episode?.Season?.SeasonNumber,
