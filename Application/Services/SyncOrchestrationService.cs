@@ -281,18 +281,37 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 : await _context.Profiles.ToListAsync();
 
             int itemsProcessed = 0;
+            var failedProfiles = new List<int>();
 
             foreach (var profile in profiles)
             {
-                itemsProcessed += await SyncProfileItemsAsync(profile);
+                try
+                {
+                    itemsProcessed += await SyncProfileItemsAsync(profile);
+                }
+                catch (Exception ex)
+                {
+                    // Isolate per-profile failures: one profile (or one of its libraries)
+                    // throwing must not abort the sync for everyone else.
+                    failedProfiles.Add(profile.Id);
+                    _logger.LogError(ex,
+                        "Sync failed for profile {ProfileId} ({Name}); continuing with remaining profiles",
+                        profile.Id, profile.DisplayName);
+                    DetachPendingChanges(syncJob);
+                }
             }
+
+            // Only fail the whole job when every profile failed; otherwise it's a partial success.
+            if (failedProfiles.Count > 0 && failedProfiles.Count == profiles.Count)
+                throw new InvalidOperationException($"Sync failed for all {profiles.Count} profile(s).");
 
             syncJob.Status = SyncJobStatus.Completed;
             syncJob.CompletedAt = DateTime.UtcNow;
             syncJob.ItemsProcessed = itemsProcessed;
             await _context.SaveChangesAsync();
 
-            _logger.LogInformation("Full sync completed. Processed {Count} items for {Profiles} profiles", itemsProcessed, profiles.Count);
+            _logger.LogInformation("Full sync completed. Processed {Count} items for {Profiles} profiles ({Failed} failed)",
+                itemsProcessed, profiles.Count, failedProfiles.Count);
         }
         catch (Exception ex)
         {
@@ -333,18 +352,23 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         }
     }
 
-    private async Task TryMarkSyncJobFailedAsync(SyncJob syncJob, Exception exception)
+    private void DetachPendingChanges(SyncJob keep)
     {
-        // After a failed SaveChanges EF keeps the offending Added/Modified entities
-        // tracked. Detach them before recording the failed job, otherwise the
-        // failure logger retries the same invalid write and hides the real error.
+        // After a failed/aborted operation EF keeps the offending Added/Modified/Deleted
+        // entities tracked. Detach them (except the sync job itself) before continuing,
+        // otherwise the next SaveChanges retries the same invalid write and hides the real error.
         foreach (var entry in _context.ChangeTracker.Entries()
-                     .Where(e => !ReferenceEquals(e.Entity, syncJob)
+                     .Where(e => !ReferenceEquals(e.Entity, keep)
                          && e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
                      .ToList())
         {
             entry.State = EntityState.Detached;
         }
+    }
+
+    private async Task TryMarkSyncJobFailedAsync(SyncJob syncJob, Exception exception)
+    {
+        DetachPendingChanges(syncJob);
 
         syncJob.Status = SyncJobStatus.Failed;
         syncJob.CompletedAt = DateTime.UtcNow;
@@ -360,18 +384,47 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         }
     }
 
+    // Jellyfin CollectionType slugs that are NOT video libraries we sync.
+    private static readonly HashSet<string> NonVideoCollectionTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "music", "musicvideos", "audiobooks", "books", "photos",
+        "homevideos", "livetv", "playlists", "boxsets", "trailers", "folders"
+    };
+
+    // A library is syncable when it is movies/tvshows or a mixed/unset library (CollectionType
+    // null or empty). Renaming a library can drop or change its CollectionType, so we must not
+    // require an exact "movies"/"tvshows" match here.
+    private static bool IsSyncableVideoLibrary(JellyfinLibraryInfo library)
+    {
+        var collectionType = library.CollectionType;
+        if (string.IsNullOrWhiteSpace(collectionType)) return true;
+        return !NonVideoCollectionTypes.Contains(collectionType);
+    }
+
     private async Task<int> SyncProfileItemsAsync(Profile profile)
     {
         int count = 0;
 
-        // Get libraries from Jellyfin
+        // Get libraries from Jellyfin. Log EVERY library with its raw CollectionType so a
+        // renamed/mixed library that no longer matches the expected slug is visible here.
         var libraries = await _jellyfinClient.GetLibrariesAsync(profile.JellyfinUserId);
-        var mediaLibraries = libraries.Where(l =>
-            l.CollectionType == "tvshows" || l.CollectionType == "movies").ToList();
+        _logger.LogInformation("Profile {ProfileId}: Jellyfin returned {Count} libraries: {Libs}",
+            profile.Id, libraries.Count,
+            string.Join(", ", libraries.Select(l => $"{l.Name} [{l.CollectionType ?? "null"}]")));
 
-        _logger.LogInformation("Syncing profile {ProfileId} across {LibCount} libraries: {Libs}",
+        // Sync the canonical "movies"/"tvshows" libraries plus any mixed/unset library
+        // (e.g. after a rename, or a genuine "mixed content" library); each item's own Type
+        // decides how it is handled below. Known non-video libraries are excluded.
+        var mediaLibraries = libraries.Where(IsSyncableVideoLibrary).ToList();
+        var excludedLibraries = libraries.Where(l => !IsSyncableVideoLibrary(l)).ToList();
+        if (excludedLibraries.Count > 0)
+            _logger.LogInformation("Profile {ProfileId}: skipping {Count} non-video libraries: {Libs}",
+                profile.Id, excludedLibraries.Count,
+                string.Join(", ", excludedLibraries.Select(l => $"{l.Name} [{l.CollectionType ?? "null"}]")));
+
+        _logger.LogInformation("Syncing profile {ProfileId} across {LibCount} video libraries: {Libs}",
             profile.Id, mediaLibraries.Count,
-            string.Join(", ", mediaLibraries.Select(l => $"{l.Name} ({l.CollectionType})")));
+            string.Join(", ", mediaLibraries.Select(l => $"{l.Name} [{l.CollectionType ?? "null"}]")));
 
         var updatedSeriesIds = new HashSet<int>();
         var updatedMovieIds = new HashSet<int>();
@@ -382,6 +435,11 @@ public class SyncOrchestrationService : ISyncOrchestrationService
         // Track all Jellyfin IDs seen in this sync for reconciliation
         var seenJellyfinSeriesIds = new HashSet<string>();
         var seenJellyfinMovieIds = new HashSet<string>();
+        // Count libraries successfully read per media type. Reconciliation (unlinking) must
+        // only run for a type when at least one of its libraries was actually read — a missing,
+        // renamed, or failed library must never be treated as "all items deleted".
+        int seriesLibrariesRead = 0;
+        int movieLibrariesRead = 0;
 
         // Fetch Jellyfin's activity log once to get accurate VideoPlaybackStopped times.
         // Jellyfin's UserData.LastPlayedDate is the session-start time, not the finish time;
@@ -410,14 +468,38 @@ public class SyncOrchestrationService : ISyncOrchestrationService
 
         foreach (var library in mediaLibraries)
         {
-            var itemType = library.CollectionType == "tvshows" ? "Episode" : "Movie";
-            var items = await _jellyfinClient.GetItemsAsync(
-                profile.JellyfinUserId,
-                parentId: library.Id,
-                itemTypes: itemType);
+            // Movies → "Movie", Shows → "Episode", mixed/unknown → fetch both and let each
+            // item's Type drive handling below.
+            var collectionType = library.CollectionType;
+            var isMoviesLib = string.Equals(collectionType, "movies", StringComparison.OrdinalIgnoreCase);
+            var isShowsLib = string.Equals(collectionType, "tvshows", StringComparison.OrdinalIgnoreCase);
+            var itemType = isShowsLib ? "Episode" : isMoviesLib ? "Movie" : "Movie,Episode";
 
-            _logger.LogInformation("Library '{LibName}' returned {ItemCount} {ItemType} items",
-                library.Name, items.Count, itemType);
+            List<JellyfinItemInfo> items;
+            try
+            {
+                items = await _jellyfinClient.GetItemsAsync(
+                    profile.JellyfinUserId,
+                    parentId: library.Id,
+                    itemTypes: itemType);
+            }
+            catch (Exception ex)
+            {
+                // A single library failing (e.g. Jellyfin returns 500 while it rescans after a
+                // rename) must NOT abort the whole sync and must NOT make this library's items
+                // look "deleted" during reconciliation — so we skip without counting it as read.
+                _logger.LogWarning(ex,
+                    "Failed to read library '{LibName}' [{CollectionType}] for profile {ProfileId}; skipping (links preserved)",
+                    library.Name, collectionType ?? "null", profile.Id);
+                continue;
+            }
+
+            // Library read OK → its media type(s) are safe to reconcile later.
+            if (isShowsLib || string.IsNullOrWhiteSpace(collectionType)) seriesLibrariesRead++;
+            if (isMoviesLib || string.IsNullOrWhiteSpace(collectionType)) movieLibrariesRead++;
+
+            _logger.LogInformation("Library '{LibName}' [{CollectionType}] returned {ItemCount} items ({ItemType})",
+                library.Name, collectionType ?? "null", items.Count, itemType);
 
             var jellyfinEpisodeOrdinalBySeries = items
                 .Where(i => i.Type == "Episode"
@@ -833,8 +915,14 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             await _propagation.PropagateStateChangeAsync(profile.Id, mediaItemId, episodeId, movieId, state);
 
         // Reconcile: unlink Jellyfin items that no longer exist in the user's library
-        // (watch history is preserved — only the Jellyfin link is removed)
-        await ReconcileDeletedItemsAsync(seenJellyfinSeriesIds, seenJellyfinMovieIds);
+        // (watch history is preserved — only the Jellyfin link is removed).
+        // Guard per media type: only unlink a type when at least one of its libraries was
+        // actually read AND returned items this pass. Without this guard a missing/renamed
+        // library (e.g. "Películas" → "Movies") would wipe every link of that type.
+        await ReconcileDeletedItemsAsync(
+            seenJellyfinSeriesIds, seenJellyfinMovieIds,
+            reconcileSeries: seriesLibrariesRead > 0 && seenJellyfinSeriesIds.Count > 0,
+            reconcileMovies: movieLibrariesRead > 0 && seenJellyfinMovieIds.Count > 0);
 
         _logger.LogInformation("Sync summary for profile {ProfileId}: {EpCount} episodes ({SeriesCount} series), {MovCount} movies",
             profile.Id, count - updatedMovieIds.Count, updatedSeriesIds.Count, updatedMovieIds.Count);
@@ -844,19 +932,26 @@ public class SyncOrchestrationService : ISyncOrchestrationService
 
     private async Task ReconcileDeletedItemsAsync(
         HashSet<string> seenSeriesIds,
-        HashSet<string> seenMovieIds)
+        HashSet<string> seenMovieIds,
+        bool reconcileSeries,
+        bool reconcileMovies)
     {
-        if (seenSeriesIds.Count == 0 && seenMovieIds.Count == 0) return;
+        if (!reconcileSeries && !reconcileMovies) return;
 
         // Find JellyfinLibraryItems that are series/movies linked to a MediaItem,
-        // but whose Jellyfin ID was NOT seen in the current sync pass
-        var linkedSeries = await _context.JellyfinLibraryItems
-            .Where(j => j.MediaItemId != null && j.Type == MediaType.Series)
-            .ToListAsync();
+        // but whose Jellyfin ID was NOT seen in the current sync pass. Only consider a media
+        // type when its libraries were actually read this pass (see guard at the call site).
+        var linkedSeries = reconcileSeries
+            ? await _context.JellyfinLibraryItems
+                .Where(j => j.MediaItemId != null && j.Type == MediaType.Series)
+                .ToListAsync()
+            : new List<JellyfinLibraryItem>();
 
-        var linkedMovies = await _context.JellyfinLibraryItems
-            .Where(j => j.MediaItemId != null && j.Type == MediaType.Movie)
-            .ToListAsync();
+        var linkedMovies = reconcileMovies
+            ? await _context.JellyfinLibraryItems
+                .Where(j => j.MediaItemId != null && j.Type == MediaType.Movie)
+                .ToListAsync()
+            : new List<JellyfinLibraryItem>();
 
         var deletedSeries = linkedSeries.Where(j => !seenSeriesIds.Contains(j.JellyfinItemId)).ToList();
         var deletedMovies = linkedMovies.Where(j => !seenMovieIds.Contains(j.JellyfinItemId)).ToList();
