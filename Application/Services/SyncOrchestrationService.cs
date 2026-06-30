@@ -525,6 +525,11 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                     seenJellyfinMovieIds.Add(i.Id);
             }
 
+            // Restore links for movies that already exist locally but are unlinked (e.g. every
+            // movie after the "Películas" → "Movies" rename severed them). This does NOT depend
+            // on the movie having been watched, so watchlist → Jellyfin playlist sync works again.
+            await RelinkExistingMoviesAsync(items);
+
             int libraryCount = 0;
             int skippedCount = 0;
 
@@ -928,6 +933,87 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             profile.Id, count - updatedMovieIds.Count, updatedSeriesIds.Count, updatedMovieIds.Count);
 
         return count;
+    }
+
+    /// <summary>
+    /// Restores jellyfin_library_item links for movies that already exist locally (matched by
+    /// TMDb/IMDb) even when they were never watched. Repairs links a previous over-aggressive
+    /// reconcile severed (e.g. all movies after the "Películas" → "Movies" rename) so that
+    /// watchlist → Jellyfin playlist sync and "in your library" state work without playback.
+    /// Cheap: only DB lookups against already-fetched items, no metadata/TMDb calls.
+    /// </summary>
+    private async Task RelinkExistingMoviesAsync(List<JellyfinItemInfo> items)
+    {
+        var movies = items.Where(i => i.Type == "Movie" && i.ProviderIds != null).ToList();
+        if (movies.Count == 0) return;
+
+        var tmdbIds = new HashSet<int>();
+        var imdbIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in movies)
+        {
+            if (m.ProviderIds!.TryGetValue("Tmdb", out var t) && int.TryParse(t, out var ti)) tmdbIds.Add(ti);
+            if (m.ProviderIds.TryGetValue("Imdb", out var im) && !string.IsNullOrWhiteSpace(im)) imdbIds.Add(im);
+        }
+        if (tmdbIds.Count == 0 && imdbIds.Count == 0) return;
+
+        var localMovies = await _context.MediaItems
+            .Where(mi => mi.MediaType == MediaType.Movie
+                && ((mi.TmdbId != null && tmdbIds.Contains(mi.TmdbId.Value))
+                    || (mi.ImdbId != null && imdbIds.Contains(mi.ImdbId))))
+            .Select(mi => new { mi.Id, mi.TmdbId, mi.ImdbId })
+            .ToListAsync();
+        if (localMovies.Count == 0) return;
+
+        var localByTmdb = localMovies.Where(x => x.TmdbId != null)
+            .GroupBy(x => x.TmdbId!.Value).ToDictionary(g => g.Key, g => g.First().Id);
+        var localByImdb = localMovies.Where(x => !string.IsNullOrWhiteSpace(x.ImdbId))
+            .GroupBy(x => x.ImdbId!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+
+        var jellyfinIds = movies.Select(m => m.Id).ToList();
+        var existingLinks = (await _context.JellyfinLibraryItems
+                .Where(j => jellyfinIds.Contains(j.JellyfinItemId))
+                .ToListAsync())
+            .GroupBy(j => j.JellyfinItemId)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        int relinked = 0;
+        foreach (var m in movies)
+        {
+            int? localId = null;
+            if (m.ProviderIds!.TryGetValue("Tmdb", out var t) && int.TryParse(t, out var ti) && localByTmdb.TryGetValue(ti, out var idT))
+                localId = idT;
+            else if (m.ProviderIds.TryGetValue("Imdb", out var im) && !string.IsNullOrWhiteSpace(im) && localByImdb.TryGetValue(im, out var idI))
+                localId = idI;
+            if (localId == null) continue;
+
+            if (existingLinks.TryGetValue(m.Id, out var link))
+            {
+                if (link.MediaItemId != localId)
+                {
+                    link.MediaItemId = localId;
+                    link.Type = MediaType.Movie;
+                    relinked++;
+                }
+            }
+            else
+            {
+                _context.JellyfinLibraryItems.Add(new JellyfinLibraryItem
+                {
+                    JellyfinItemId = m.Id,
+                    Name = m.Name,
+                    Type = MediaType.Movie,
+                    MediaItemId = localId,
+                });
+                relinked++;
+            }
+        }
+
+        if (relinked > 0)
+        {
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Relinked {Count} existing movie(s) to local media items (no playback required)", relinked);
+        }
     }
 
     private async Task ReconcileDeletedItemsAsync(
