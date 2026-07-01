@@ -75,14 +75,32 @@ public class WebhookController : ControllerBase
 
             log.EventType = eventType ?? "Unknown";
 
-            // Process relevant events
-            if (eventType is "PlaybackStart" or "PlaybackStop" or "PlaybackProgress" or "UserDataSaved")
-            {
-                var userId = root.TryGetProperty("UserId", out var uid) ? uid.GetString() : null;
-                var itemId = root.TryGetProperty("ItemId", out var iid) ? iid.GetString() : null;
+			// Process relevant events
+			if (eventType is "PlaybackStart" or "PlaybackStop" or "PlaybackProgress" or "UserDataSaved")
+			{
+				var saveReason = root.TryGetProperty("SaveReason", out var saveReasonValue)
+					? saveReasonValue.GetString()
+					: null;
+				bool? played = root.TryGetProperty("Played", out var playedValue) && playedValue.ValueKind is JsonValueKind.True or JsonValueKind.False
+					? playedValue.GetBoolean()
+					: null;
 
-                if (userId != null && itemId != null)
-                {
+				if (eventType == "UserDataSaved" && (saveReason == "Import" || played != true))
+				{
+					log.Success = true;
+					log.ProcessedAt = DateTime.UtcNow;
+					log.ErrorMessage = saveReason == "Import"
+						? "Ignored UserDataSaved import event"
+						: "Ignored UserDataSaved event without Played=true";
+					_logger.LogDebug("Ignored Jellyfin UserDataSaved event (SaveReason={SaveReason}, Played={Played})", saveReason, played);
+				}
+				else
+				{
+				var userId = root.TryGetProperty("UserId", out var uid) ? uid.GetString() : null;
+				var itemId = root.TryGetProperty("ItemId", out var iid) ? iid.GetString() : null;
+
+				if (userId != null && itemId != null)
+				{
                     // Find profile by Jellyfin user ID
                     var profile = _context.Profiles.FirstOrDefault(p => p.JellyfinUserId == userId);
                     if (profile != null)
@@ -100,14 +118,15 @@ public class WebhookController : ControllerBase
                             ? posTicks.GetInt64()
                             : 0;
 
-                        await _syncService.ProcessWatchEventAsync(
-                            profile.Id, itemId, watchEventType, positionTicks, SyncSource.Webhook);
-                    }
-                }
+						await _syncService.ProcessWatchEventAsync(
+							profile.Id, itemId, watchEventType, positionTicks, SyncSource.Webhook);
+					}
+				}
 
-                log.Success = true;
-                log.ProcessedAt = DateTime.UtcNow;
-            }
+				log.Success = true;
+				log.ProcessedAt = DateTime.UtcNow;
+				}
+			}
             else
             {
                 log.Success = true;
