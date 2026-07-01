@@ -24,13 +24,14 @@ public class WatchlistSummaryDto
     public WatchlistRole Role { get; set; }
     public WatchlistPermissionsDto Permissions { get; set; } = new();
     public int ItemCount { get; set; }
+    public List<WatchlistMemberSummaryDto> Members { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
 public class WatchlistDetailDto : WatchlistSummaryDto
 {
-    public List<WatchlistMemberDto> Members { get; set; } = new();
+    public new List<WatchlistMemberDto> Members { get; set; } = new();
     public List<WatchlistItemDto> Items { get; set; } = new();
 }
 
@@ -46,12 +47,17 @@ public class WatchlistPermissionsDto
     public bool CanDeleteWatchlist { get; set; }
 }
 
-public class WatchlistMemberDto
+public class WatchlistMemberSummaryDto
 {
-    public int Id { get; set; }
     public int UserId { get; set; }
     public string Username { get; set; } = string.Empty;
     public WatchlistRole Role { get; set; }
+    public string? AvatarUrl { get; set; }
+}
+
+public class WatchlistMemberDto : WatchlistMemberSummaryDto
+{
+    public int Id { get; set; }
     public WatchlistPermissionsDto Permissions { get; set; } = new();
     public DateTime CreatedAt { get; set; }
 }

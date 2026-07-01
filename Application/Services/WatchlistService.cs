@@ -33,8 +33,12 @@ public class WatchlistService : IWatchlistService
                 .ThenInclude(w => w.OwnerUser)
             .Include(m => m.Watchlist)
                 .ThenInclude(w => w.Items)
+            .Include(m => m.Watchlist)
+                .ThenInclude(w => w.Members)
+                    .ThenInclude(mm => mm.User)
             .Where(m => m.UserId == currentUserId)
             .OrderBy(m => m.Watchlist.Name)
+            .AsSplitQuery()
             .ToListAsync();
 
         var summaries = members.Select(m => MapSummary(m.Watchlist, m)).ToList();
@@ -693,6 +697,11 @@ public class WatchlistService : IWatchlistService
             Role = member.Role,
             Permissions = EffectivePermissions(member),
             ItemCount = watchlist.Items.Count,
+            Members = watchlist.Members
+                .OrderBy(m => m.Role)
+                .ThenBy(m => m.User.Username)
+                .Select(MapMemberSummary)
+                .ToList(),
             CreatedAt = watchlist.CreatedAt,
             UpdatedAt = watchlist.UpdatedAt
         };
@@ -731,8 +740,20 @@ public class WatchlistService : IWatchlistService
             UserId = member.UserId,
             Username = member.User.Username,
             Role = member.Role,
+            AvatarUrl = member.User.AvatarUrl,
             Permissions = EffectivePermissions(member),
             CreatedAt = member.CreatedAt
+        };
+    }
+
+    private WatchlistMemberSummaryDto MapMemberSummary(WatchlistMember member)
+    {
+        return new WatchlistMemberSummaryDto
+        {
+            UserId = member.UserId,
+            Username = member.User.Username,
+            Role = member.Role,
+            AvatarUrl = member.User.AvatarUrl
         };
     }
 
