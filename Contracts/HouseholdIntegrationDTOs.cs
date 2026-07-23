@@ -90,7 +90,9 @@ public sealed class HouseholdActivityItemDto
     public int? EpisodeNumber { get; set; }
     public string EventType { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
+    public string PosterUrl { get; set; } = string.Empty;
     public decimal? UserRating { get; set; }
+    public double? TmdbRating { get; set; }
 }
 
 public sealed class HouseholdUpcomingItemDto
@@ -105,6 +107,7 @@ public sealed class HouseholdUpcomingItemDto
     public string? AirTime { get; set; }
     public string? AirTimeUtc { get; set; }
     public int BatchCount { get; set; } = 1;
+    public string PosterUrl { get; set; } = string.Empty;
 }
 
 public sealed class HouseholdStateWriteDto

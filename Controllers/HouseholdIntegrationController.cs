@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 using Jellywatch.Api.Application;
 using Jellywatch.Api.Application.Interfaces;
 using Jellywatch.Api.Common;
@@ -101,34 +102,77 @@ public sealed class HouseholdIntegrationController : ControllerBase
             .FirstAsync(p => p.Id == profileId);
 
         var summary = await BuildSummaryAsync(profileId, access.AccountId!, profile.DisplayName);
-        var activity = await _context.WatchEvents
+        var events = await _context.WatchEvents
             .AsNoTracking()
             .Where(e => e.ProfileId == profileId)
+            .Include(e => e.MediaItem)
+            .Include(e => e.Episode)
+                .ThenInclude(episode => episode!.Season)
             .OrderByDescending(e => e.Timestamp)
             .Take(activityLimit)
-            .Select(e => new HouseholdActivityItemDto
+            .ToListAsync();
+        var mediaItemIds = events.Select(e => e.MediaItemId).Distinct().ToList();
+        var watchStates = await _context.ProfileWatchStates
+            .AsNoTracking()
+            .Where(state => state.ProfileId == profileId && mediaItemIds.Contains(state.MediaItemId))
+            .ToListAsync();
+        var tmdbRatings = await _context.ExternalRatings
+            .AsNoTracking()
+            .Where(rating => mediaItemIds.Contains(rating.MediaItemId) && rating.Provider == ExternalProvider.Tmdb)
+            .ToDictionaryAsync(rating => rating.MediaItemId, rating => rating.Score);
+        var activity = events.Select(e =>
+        {
+            decimal? userRating;
+            if (e.EpisodeId.HasValue)
+            {
+                userRating = watchStates
+                    .Where(state => state.EpisodeId == e.EpisodeId)
+                    .OrderByDescending(state => state.LastUpdated)
+                    .Select(state => state.UserRating)
+                    .FirstOrDefault();
+                userRating ??= watchStates
+                    .Where(state => state.SeasonId == e.Episode!.SeasonId)
+                    .OrderByDescending(state => state.LastUpdated)
+                    .Select(state => state.UserRating)
+                    .FirstOrDefault();
+                userRating ??= watchStates
+                    .Where(state => state.MediaItemId == e.MediaItemId
+                        && state.EpisodeId == null
+                        && state.SeasonId == null
+                        && state.MovieId == null)
+                    .OrderByDescending(state => state.LastUpdated)
+                    .Select(state => state.UserRating)
+                    .FirstOrDefault();
+            }
+            else
+            {
+                userRating = watchStates
+                    .Where(state => state.MediaItemId == e.MediaItemId
+                        && state.EpisodeId == null
+                        && state.SeasonId == null)
+                    .OrderByDescending(state => state.LastUpdated)
+                    .Select(state => state.UserRating)
+                    .FirstOrDefault();
+            }
+
+            tmdbRatings.TryGetValue(e.MediaItemId, out var tmdbScore);
+            return new HouseholdActivityItemDto
             {
                 EventId = e.Id,
                 MediaItemId = e.MediaItemId,
                 Title = e.MediaItem.Title,
                 MediaType = e.MediaItem.MediaType == MediaType.Movie ? "movie" : "series",
                 EpisodeId = e.EpisodeId,
-                EpisodeName = e.Episode == null ? null : e.Episode.Name,
-                SeasonNumber = e.Episode == null ? null : e.Episode.Season.SeasonNumber,
-                EpisodeNumber = e.Episode == null ? null : e.Episode.EpisodeNumber,
+                EpisodeName = e.Episode?.Name,
+                SeasonNumber = e.Episode?.Season.SeasonNumber,
+                EpisodeNumber = e.Episode?.EpisodeNumber,
                 EventType = e.EventType.ToString(),
                 Timestamp = e.Timestamp,
-                UserRating = e.EpisodeId.HasValue
-                    ? _context.ProfileWatchStates
-                        .Where(s => s.ProfileId == profileId && s.EpisodeId == e.EpisodeId)
-                        .Select(s => s.UserRating)
-                        .FirstOrDefault()
-                    : _context.ProfileWatchStates
-                        .Where(s => s.ProfileId == profileId && s.MovieId == e.MovieId)
-                        .Select(s => s.UserRating)
-                        .FirstOrDefault(),
-            })
-            .ToListAsync();
+                PosterUrl = $"/api/asset/{e.MediaItemId}/poster",
+                UserRating = userRating,
+                TmdbRating = e.Episode?.TmdbRating ?? ParseRating(tmdbScore),
+            };
+        }).ToList();
 
         var upcomingResult = await _statsService.GetUpcomingAsync(profileId, upcomingDays, access.UserId);
         var upcoming = upcomingResult.Success && upcomingResult.Data is not null
@@ -144,6 +188,7 @@ public sealed class HouseholdIntegrationController : ControllerBase
                 AirTime = item.AirTime,
                 AirTimeUtc = item.AirTimeUtc,
                 BatchCount = item.BatchCount,
+                PosterUrl = $"/api/asset/{item.MediaItemId}/poster",
             }).ToList()
             : new List<HouseholdUpcomingItemDto>();
 
@@ -239,6 +284,11 @@ public sealed class HouseholdIntegrationController : ControllerBase
         State = dto.State,
         Timestamp = dto.Timestamp,
     };
+
+    private static double? ParseRating(string? value) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var rating)
+            ? rating
+            : null;
 
     private ObjectResult ToOAuthResult<T>(HouseholdOperationResult<T> result)
     {
