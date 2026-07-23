@@ -4,6 +4,7 @@ using Jellywatch.Api.Application.Services;
 using Jellywatch.Api.Infrastructure.Persistence;
 using Jellywatch.Api.Infrastructure.ExternalServices;
 using Jellywatch.Api.Infrastructure.BackgroundJobs;
+using System.Threading.RateLimiting;
 
 namespace Jellywatch.Api.Configuration;
 
@@ -51,6 +52,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAssetCacheService, AssetCacheService>();
 
         services.AddScoped<IWatchStateService, WatchStateService>();
+        services.AddScoped<IHouseholdIntegrationAccess, HouseholdIntegrationAccess>();
+        services.AddScoped<IHouseholdOAuthService, HouseholdOAuthService>();
 
         services.AddScoped<IWatchlistService, WatchlistService>();
         services.AddScoped<IJellyfinPlaylistSyncService, JellyfinPlaylistSyncService>();
@@ -252,6 +255,31 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddJellywatchRateLimiting(this IServiceCollection services)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy("household-authorize", context => RateLimitPartition.GetFixedWindowLimiter(
+                context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 20,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                }));
+            options.AddPolicy("household-token", context => RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 30,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                }));
+        });
+        return services;
+    }
+
     public static void LoadEnvironmentFile(this WebApplicationBuilder builder)
     {
         var envFilePath = Path.Combine(Directory.GetCurrentDirectory(), ".env");
@@ -306,6 +334,19 @@ public static class ServiceCollectionExtensions
         builder.Configuration["RadarrSettings:ApiKey"] = Environment.GetEnvironmentVariable("RADARR_API_KEY")
             ?? builder.Configuration["RadarrSettings:ApiKey"];
 
+        builder.Configuration["HouseholdIntegration:ClientId"] = Environment.GetEnvironmentVariable("HOUSEHOLD_CLIENT_ID")
+            ?? builder.Configuration["HouseholdIntegration:ClientId"];
+        var householdRedirectUris = Environment.GetEnvironmentVariable("HOUSEHOLD_REDIRECT_URIS");
+        if (!string.IsNullOrWhiteSpace(householdRedirectUris))
+        {
+            var redirects = householdRedirectUris.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            for (var i = 0; i < redirects.Length; i++)
+                builder.Configuration[$"HouseholdIntegration:RedirectUris:{i}"] = redirects[i];
+        }
+        ApplyPositiveIntOverride(builder, "HOUSEHOLD_ACCESS_TOKEN_MINUTES", "HouseholdIntegration:AccessTokenMinutes");
+        ApplyPositiveIntOverride(builder, "HOUSEHOLD_REFRESH_TOKEN_DAYS", "HouseholdIntegration:RefreshTokenDays");
+        ApplyPositiveIntOverride(builder, "HOUSEHOLD_AUTHORIZATION_CODE_MINUTES", "HouseholdIntegration:AuthorizationCodeMinutes");
+
         builder.Configuration["DatabaseSettings:DatabasePath"] = Environment.GetEnvironmentVariable("DATABASE_PATH")
             ?? builder.Configuration["DatabaseSettings:DatabasePath"];
 
@@ -330,5 +371,12 @@ public static class ServiceCollectionExtensions
         services.Configure<OmdbSettings>(configuration.GetSection(OmdbSettings.SectionName));
         services.Configure<SonarrSettings>(configuration.GetSection(SonarrSettings.SectionName));
         services.Configure<RadarrSettings>(configuration.GetSection(RadarrSettings.SectionName));
+        services.Configure<HouseholdIntegrationSettings>(configuration.GetSection(HouseholdIntegrationSettings.SectionName));
+    }
+
+    private static void ApplyPositiveIntOverride(WebApplicationBuilder builder, string environmentName, string configurationName)
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable(environmentName), out var value) && value > 0)
+            builder.Configuration[configurationName] = value.ToString();
     }
 }

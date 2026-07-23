@@ -41,6 +41,10 @@ public class JellywatchDbContext : DbContext
     public DbSet<WatchlistInvitation> WatchlistInvitations { get; set; }
     public DbSet<WatchlistAccessRequest> WatchlistAccessRequests { get; set; }
     public DbSet<UserWatchlistPreference> UserWatchlistPreferences { get; set; }
+    public DbSet<HouseholdConnection> HouseholdConnections { get; set; }
+    public DbSet<HouseholdAuthorizationCode> HouseholdAuthorizationCodes { get; set; }
+    public DbSet<HouseholdAccessToken> HouseholdAccessTokens { get; set; }
+    public DbSet<HouseholdRefreshToken> HouseholdRefreshTokens { get; set; }
 
     public override int SaveChanges()
     {

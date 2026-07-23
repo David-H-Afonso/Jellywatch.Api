@@ -22,6 +22,7 @@ builder.Services.AddJellywatchServices();
 builder.Services.AddJellywatchHttpClients();
 builder.Services.AddJellywatchCors(builder.Configuration, LoggerFactory.Create(b => b.AddConsole()));
 builder.Services.AddJellywatchAuth(builder.Configuration, builder.Environment);
+builder.Services.AddJellywatchRateLimiting();
 builder.Services.AddJellywatchSwagger();
 
 var app = builder.Build();
@@ -72,6 +73,7 @@ catch (Exception ex)
 app.UseCors(builder.Environment.IsDevelopment() ? "AllowAll" : "AllowSpecificOrigins");
 
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseMiddleware<UserContextMiddleware>();
 app.UseAuthorization();
 

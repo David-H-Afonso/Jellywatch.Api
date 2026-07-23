@@ -30,6 +30,7 @@ public class WebhookController : ControllerBase
         _logger = logger;
     }
 
+    [HttpPost]
     [HttpPost("webhook")]
     public async Task<IActionResult> ReceiveWebhook()
     {
