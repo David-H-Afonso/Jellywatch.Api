@@ -116,10 +116,13 @@ public sealed class HouseholdIntegrationController : ControllerBase
             .AsNoTracking()
             .Where(state => state.ProfileId == profileId && mediaItemIds.Contains(state.MediaItemId))
             .ToListAsync();
-        var tmdbRatings = await _context.ExternalRatings
+        var tmdbRatingRows = await _context.ExternalRatings
             .AsNoTracking()
             .Where(rating => mediaItemIds.Contains(rating.MediaItemId) && rating.Provider == ExternalProvider.Tmdb)
-            .ToDictionaryAsync(rating => rating.MediaItemId, rating => rating.Score);
+            .ToListAsync();
+        var tmdbRatings = tmdbRatingRows
+            .GroupBy(rating => rating.MediaItemId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(rating => rating.UpdatedAt).First().Score);
         var activity = events.Select(e =>
         {
             decimal? userRating;
