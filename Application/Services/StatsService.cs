@@ -410,10 +410,6 @@ public class StatsService : IStatsService
                 && string.Compare(ep.AirDate, endDate) <= 0
                 && watchedSeriesMediaItemIds.Contains(ep.Season.Series.MediaItemId)
                 && !_context.ProfileMediaBlocks.Any(b => b.ProfileId == profileId && b.MediaItemId == ep.Season.Series.MediaItemId))
-            .OrderBy(ep => ep.AirDate)
-            .ThenBy(ep => ep.Season.Series.MediaItem.Title)
-            .ThenBy(ep => ep.Season.SeasonNumber)
-            .ThenBy(ep => ep.EpisodeNumber)
             .Select(ep => new UpcomingEpisodeDto
             {
                 MediaItemId = ep.Season.Series.MediaItemId,
@@ -433,16 +429,46 @@ public class StatsService : IStatsService
             .GroupBy(ep => (ep.MediaItemId, ep.AirDate))
             .Select(g =>
             {
-                var first = g.First();
+                var first = g
+                    .OrderBy(GetUpcomingSortTime)
+                    .ThenBy(ep => ep.SeriesTitle)
+                    .ThenBy(ep => ep.SeasonNumber)
+                    .ThenBy(ep => ep.EpisodeNumber)
+                    .First();
                 first.BatchCount = g.Count();
                 return first;
             })
-            .OrderBy(ep => ep.AirDate)
+            .OrderBy(GetUpcomingSortTime)
             .ThenBy(ep => ep.SeriesTitle)
             .Take(50)
             .ToList();
 
         return ServiceResult<List<UpcomingEpisodeDto>>.Ok(upcoming);
+    }
+
+    private static DateTimeOffset GetUpcomingSortTime(UpcomingEpisodeDto episode)
+    {
+        if (episode.AirTimeUtc?.Contains('T') == true
+            && DateTimeOffset.TryParse(episode.AirTimeUtc, out var utcTime))
+            return utcTime;
+
+        var fallbackTime = episode.AirTime;
+        if (fallbackTime is null
+            && TimeSpan.TryParse(episode.AirTimeUtc, out _))
+        {
+            fallbackTime = episode.AirTimeUtc;
+        }
+
+        if (DateTime.TryParse(
+                $"{episode.AirDate}T{fallbackTime ?? "00:00"}",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var localTime))
+        {
+            return new DateTimeOffset(DateTime.SpecifyKind(localTime, DateTimeKind.Unspecified), TimeSpan.Zero);
+        }
+
+        return DateTimeOffset.MaxValue;
     }
 
     private async Task<List<int>> GetWatchlistSeriesForDashboardAsync(int userId, int profileId)
