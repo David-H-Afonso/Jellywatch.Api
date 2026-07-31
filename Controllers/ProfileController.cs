@@ -156,10 +156,8 @@ public class ProfileController : BaseApiController
             .Take(query.Take)
             .ToListAsync();
 
-        // Batch-load user ratings for these events.
-        // Series activity is episode-based, so prefer episode rating, then season, then series.
+        // Batch-load the rating for each activity target without inheriting parent ratings.
         var episodeIds = events.Where(e => e.EpisodeId != null).Select(e => e.EpisodeId!.Value).Distinct().ToList();
-        var seasonIds = events.Where(e => e.Episode != null).Select(e => e.Episode!.SeasonId).Distinct().ToList();
         var seriesMediaItemIds = events
             .Where(e => e.MediaItem.MediaType == Domain.Enums.MediaType.Series)
             .Select(e => e.MediaItemId)
@@ -220,17 +218,6 @@ public class ProfileController : BaseApiController
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
         }
 
-        var seasonRatings = new Dictionary<int, decimal?>();
-        if (seasonIds.Count > 0)
-        {
-            var seasonStates = await _context.ProfileWatchStates
-                .Where(s => s.ProfileId == profileId && s.SeasonId != null && seasonIds.Contains(s.SeasonId.Value))
-                .ToListAsync();
-            seasonRatings = seasonStates
-                .GroupBy(s => s.SeasonId!.Value)
-                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.LastUpdated).First().UserRating);
-        }
-
         var seriesRatings = new Dictionary<int, decimal?>();
         if (seriesMediaItemIds.Count > 0)
         {
@@ -287,12 +274,7 @@ public class ProfileController : BaseApiController
 
             if (e.EpisodeId != null)
             {
-                episodeRatings.TryGetValue(e.EpisodeId.Value, out var episodeRating);
-                decimal? seasonRating = null;
-                if (e.Episode != null)
-                    seasonRatings.TryGetValue(e.Episode.SeasonId, out seasonRating);
-                seriesRatings.TryGetValue(e.MediaItemId, out var seriesRating);
-                userRating = episodeRating ?? seasonRating ?? seriesRating;
+                episodeRatings.TryGetValue(e.EpisodeId.Value, out userRating);
             }
             else if (e.MediaItem.MediaType == Domain.Enums.MediaType.Movie)
             {
