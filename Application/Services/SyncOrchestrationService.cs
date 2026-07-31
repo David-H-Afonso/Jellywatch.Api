@@ -10,6 +10,7 @@ namespace Jellywatch.Api.Application.Services;
 public class SyncOrchestrationService : ISyncOrchestrationService
 {
     private static readonly SemaphoreSlim FullSyncGate = new(1, 1);
+    private static readonly SemaphoreSlim WatchEventGate = new(1, 1);
 
     private readonly JellywatchDbContext _context;
     private readonly IJellyfinApiClient _jellyfinClient;
@@ -193,68 +194,67 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             ? WatchEventType.Progress
             : eventType;
 
-        var sameTarget = _context.WatchEvents.Where(e =>
-            e.ProfileId == profileId
-            && e.MediaItemId == mediaItemId.Value
-            && (!episodeId.HasValue || e.EpisodeId == episodeId)
-            && (!movieId.HasValue || e.MovieId == movieId));
-
-        if (persistedEventType == WatchEventType.Progress)
+        await WatchEventGate.WaitAsync();
+        try
         {
-            var existingFinished = await sameTarget.AnyAsync(e => e.EventType == WatchEventType.Finished);
-            if (!existingFinished)
+            var sameTarget = _context.WatchEvents.Where(e =>
+                e.ProfileId == profileId
+                && e.MediaItemId == mediaItemId.Value
+                && e.EpisodeId == episodeId
+                && e.MovieId == movieId);
+
+            if (persistedEventType == WatchEventType.Progress)
             {
-                var transientEvents = await sameTarget
+                var now = DateTime.UtcNow;
+                await _context.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO "watch_event"
+                        ("profile_id", "media_item_id", "episode_id", "movie_id", "jellyfin_item_id",
+                         "event_type", "position_ticks", "source", "timestamp", "CreatedAt")
+                    SELECT
+                        {profileId}, {mediaItemId.Value}, {episodeId}, {movieId}, {jellyfinItemId},
+                        {(int)WatchEventType.Progress}, {positionTicks}, {(int)source}, {now}, {now}
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM "watch_event"
+                        WHERE "profile_id" = {profileId}
+                          AND "media_item_id" = {mediaItemId.Value}
+                          AND ("episode_id" = {episodeId} OR ("episode_id" IS NULL AND {episodeId} IS NULL))
+                          AND ("movie_id" = {movieId} OR ("movie_id" IS NULL AND {movieId} IS NULL))
+                          AND "event_type" = {(int)WatchEventType.Finished}
+                    )
+                    ON CONFLICT ("profile_id", "jellyfin_item_id") WHERE "event_type" = 1
+                    DO UPDATE SET
+                        "media_item_id" = excluded."media_item_id",
+                        "episode_id" = excluded."episode_id",
+                        "movie_id" = excluded."movie_id",
+                        "position_ticks" = excluded."position_ticks",
+                        "source" = excluded."source",
+                        "timestamp" = excluded."timestamp";
+                    """);
+
+                await sameTarget
+                    .Where(e => e.EventType != WatchEventType.Progress && e.EventType != WatchEventType.Finished)
+                    .ExecuteDeleteAsync();
+            }
+            // For Finished events, update an existing polling-created record if it exists.
+            // Polling uses LastPlayedDate (session start), while the real-time webhook has
+            // the accurate stop timestamp.
+            else if (persistedEventType == WatchEventType.Finished)
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                // Taking the write lock before reading prevents a concurrent progress insert from
+                // slipping in between the lookup and the Finished save.
+                await sameTarget
                     .Where(e => e.EventType != WatchEventType.Finished)
+                    .ExecuteDeleteAsync();
+
+                var existingFinished = await sameTarget
+                    .Where(e => e.EventType == WatchEventType.Finished)
                     .OrderByDescending(e => e.Timestamp)
                     .ThenByDescending(e => e.Id)
-                    .ToListAsync();
-                var transientEvent = transientEvents.FirstOrDefault();
+                    .FirstOrDefaultAsync();
 
-                if (transientEvent == null)
-                {
-                    _context.WatchEvents.Add(new WatchEvent
-                    {
-                        ProfileId = profileId,
-                        MediaItemId = mediaItemId.Value,
-                        EpisodeId = episodeId,
-                        MovieId = movieId,
-                        JellyfinItemId = jellyfinItemId,
-                        EventType = WatchEventType.Progress,
-                        PositionTicks = positionTicks,
-                        Source = source,
-                        Timestamp = DateTime.UtcNow,
-                    });
-                }
-                else
-                {
-                    transientEvent.JellyfinItemId = jellyfinItemId;
-                    transientEvent.EventType = WatchEventType.Progress;
-                    transientEvent.PositionTicks = positionTicks;
-                    transientEvent.Source = source;
-                    transientEvent.Timestamp = DateTime.UtcNow;
-                    if (transientEvents.Count > 1)
-                        _context.WatchEvents.RemoveRange(transientEvents.Skip(1));
-                }
-
-                await _context.SaveChangesAsync();
-            }
-        }
-        // For Finished events, update an existing polling-created record if it exists.
-        // Polling uses LastPlayedDate (session start), while the real-time webhook has
-        // the accurate stop timestamp.
-        else if (persistedEventType == WatchEventType.Finished)
-        {
-            var targetEvents = await sameTarget
-                .OrderByDescending(e => e.EventType == WatchEventType.Finished)
-                .ThenByDescending(e => e.Timestamp)
-                .ThenByDescending(e => e.Id)
-                .ToListAsync();
-            var existingFinished = targetEvents.FirstOrDefault(e => e.EventType == WatchEventType.Finished);
-
-            if (existingFinished == null)
-            {
-                existingFinished = targetEvents.FirstOrDefault();
                 if (existingFinished == null)
                 {
                     existingFinished = new WatchEvent
@@ -263,47 +263,50 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                         MediaItemId = mediaItemId.Value,
                         EpisodeId = episodeId,
                         MovieId = movieId,
+                        JellyfinItemId = jellyfinItemId,
+                        EventType = WatchEventType.Finished,
+                        PositionTicks = positionTicks,
+                        Source = source,
+                        Timestamp = DateTime.UtcNow,
                     };
                     _context.WatchEvents.Add(existingFinished);
                 }
+                else if (existingFinished.Source == SyncSource.Polling)
+                {
+                    // Real-time webhook has the accurate stop time; correct the polling timestamp
+                    existingFinished.Timestamp = DateTime.UtcNow;
+                    existingFinished.Source = source;
+                }
 
-                existingFinished.JellyfinItemId = jellyfinItemId;
-                existingFinished.EventType = WatchEventType.Finished;
-                existingFinished.PositionTicks = positionTicks;
-                existingFinished.Source = source;
-                existingFinished.Timestamp = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
             }
-            else if (existingFinished.Source == SyncSource.Polling)
+
+            // Real-time Jellyfin event always takes precedence over manual overrides
+            var existingState = await _context.ProfileWatchStates
+                .FirstOrDefaultAsync(s => s.ProfileId == profileId && s.MediaItemId == mediaItemId.Value
+                    && s.EpisodeId == episodeId && s.MovieId == movieId);
+            if (existingState?.IsManualOverride == true)
             {
-                // Real-time webhook has the accurate stop time; correct the polling timestamp
-                existingFinished.Timestamp = DateTime.UtcNow;
-                existingFinished.Source = source;
+                existingState.IsManualOverride = false;
+                await _context.SaveChangesAsync();
             }
 
-            _context.WatchEvents.RemoveRange(targetEvents.Where(e => e != existingFinished));
-            await _context.SaveChangesAsync();
-        }
+            // Recalculate state
+            await _stateCalc.RecalculateProfileWatchStateAsync(profileId, mediaItemId.Value, episodeId, movieId);
 
-        // Real-time Jellyfin event always takes precedence over manual overrides
-        var existingState = await _context.ProfileWatchStates
-            .FirstOrDefaultAsync(s => s.ProfileId == profileId && s.MediaItemId == mediaItemId.Value
-                && s.EpisodeId == episodeId && s.MovieId == movieId);
-        if (existingState?.IsManualOverride == true)
+            // Get the new state and propagate
+            var newState = await _context.ProfileWatchStates
+                .Where(s => s.ProfileId == profileId && s.MediaItemId == mediaItemId.Value && s.EpisodeId == episodeId && s.MovieId == movieId)
+                .Select(s => s.State)
+                .FirstOrDefaultAsync();
+
+            await _propagation.PropagateStateChangeAsync(profileId, mediaItemId.Value, episodeId, movieId, newState);
+        }
+        finally
         {
-            existingState.IsManualOverride = false;
-            await _context.SaveChangesAsync();
+            WatchEventGate.Release();
         }
-
-        // Recalculate state
-        await _stateCalc.RecalculateProfileWatchStateAsync(profileId, mediaItemId.Value, episodeId, movieId);
-
-        // Get the new state and propagate
-        var newState = await _context.ProfileWatchStates
-            .Where(s => s.ProfileId == profileId && s.MediaItemId == mediaItemId.Value && s.EpisodeId == episodeId && s.MovieId == movieId)
-            .Select(s => s.State)
-            .FirstOrDefaultAsync();
-
-        await _propagation.PropagateStateChangeAsync(profileId, mediaItemId.Value, episodeId, movieId, newState);
 
         _logger.LogInformation("Processed {EventType} for profile {ProfileId} item {ItemId}", eventType, profileId, jellyfinItemId);
     }
