@@ -4,9 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Jellywatch.Api.Contracts;
 using Jellywatch.Api.Infrastructure.Persistence;
 using Jellywatch.Api.Application.Interfaces;
-using Jellywatch.Api.Application.Services;
 using Jellywatch.Api.Infrastructure.ExternalServices;
-using Jellywatch.Api.Infrastructure.BackgroundJobs;
 using Jellywatch.Api.Domain.Entities;
 
 namespace Jellywatch.Api.Controllers;
@@ -17,15 +15,13 @@ public class AuthController : BaseApiController
     private readonly JellywatchDbContext _context;
     private readonly IAuthService _authService;
     private readonly IJellyfinApiClient _jellyfinClient;
-    private readonly ISyncOrchestrationService _syncService;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(JellywatchDbContext context, IAuthService authService, IJellyfinApiClient jellyfinClient, ISyncOrchestrationService syncService, ILogger<AuthController> logger)
+    public AuthController(JellywatchDbContext context, IAuthService authService, IJellyfinApiClient jellyfinClient, ILogger<AuthController> logger)
     {
         _context = context;
         _authService = authService;
         _jellyfinClient = jellyfinClient;
-        _syncService = syncService;
         _logger = logger;
     }
 
@@ -102,25 +98,6 @@ public class AuthController : BaseApiController
         var token = _authService.GenerateToken(user);
 
         _logger.LogInformation("User {Username} (JellyfinId: {JellyfinId}) logged in successfully", user.Username, user.JellyfinUserId);
-
-        // Fire-and-forget sync for all profiles belonging to this user
-        var profileIds = await _context.Profiles
-            .Where(p => p.UserId == user.Id)
-            .Select(p => p.Id)
-            .ToListAsync();
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                foreach (var pid in profileIds)
-                    await _syncService.RunFullSyncAsync(pid);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Post-login sync failed for user {UserId}", user.Id);
-            }
-        });
 
         return Ok(new LoginResponse
         {

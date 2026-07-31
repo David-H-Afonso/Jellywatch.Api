@@ -143,8 +143,15 @@ public class WebhookController : ControllerBase
             _logger.LogError(ex, "Error processing webhook");
         }
 
-        _context.WebhookEventLogs.Add(log);
-        await _context.SaveChangesAsync();
+        // Successful position and user-data payloads can arrive every second and have no
+        // diagnostic value once applied. Failures are still retained for investigation.
+        var isNoisySuccessfulEvent = log.Success
+            && log.EventType is "PlaybackProgress" or "UserDataSaved";
+        if (!isNoisySuccessfulEvent)
+        {
+            _context.WebhookEventLogs.Add(log);
+            await _context.SaveChangesAsync();
+        }
 
         return Ok();
     }

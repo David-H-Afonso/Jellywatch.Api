@@ -25,5 +25,17 @@ public class WatchEventConfiguration : IEntityTypeConfiguration<WatchEvent>
         e.HasOne(x => x.Movie).WithMany(mv => mv.WatchEvents).HasForeignKey(x => x.MovieId).OnDelete(DeleteBehavior.SetNull);
         e.HasIndex(x => x.JellyfinItemId);
         e.HasIndex(x => x.Timestamp);
+        e.HasIndex(x => new { x.ProfileId, x.JellyfinItemId })
+            .HasDatabaseName("IX_watch_event_profile_item_progress")
+            .IsUnique()
+            .HasFilter("\"event_type\" = 1");
+        e.HasIndex(x => new { x.ProfileId, x.EpisodeId })
+            .HasDatabaseName("IX_watch_event_profile_episode_finished")
+            .IsUnique()
+            .HasFilter("\"event_type\" = 3 AND \"episode_id\" IS NOT NULL");
+        e.HasIndex(x => new { x.ProfileId, x.MovieId })
+            .HasDatabaseName("IX_watch_event_profile_movie_finished")
+            .IsUnique()
+            .HasFilter("\"event_type\" = 3 AND \"movie_id\" IS NOT NULL");
     }
 }

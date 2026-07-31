@@ -185,10 +185,32 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             episodeId = episode.Id;
         }
 
-        // Record the watch event; for Finished events, update an existing polling-created record
-        // if it exists — polling uses LastPlayedDate (session start), the real-time webhook has
+        // Keep one current progress event per profile and item. Jellyfin can emit progress every
+        // second, so inserting every notification would flood both the activity feed and SQLite.
+        if (eventType == WatchEventType.Progress)
+        {
+            var now = DateTime.UtcNow;
+            await _context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO "watch_event"
+                    ("profile_id", "media_item_id", "episode_id", "movie_id", "jellyfin_item_id",
+                     "event_type", "position_ticks", "source", "timestamp", "CreatedAt")
+                VALUES
+                    ({profileId}, {mediaItemId.Value}, {episodeId}, {movieId}, {jellyfinItemId},
+                     {(int)eventType}, {positionTicks}, {(int)source}, {now}, {now})
+                ON CONFLICT ("profile_id", "jellyfin_item_id") WHERE "event_type" = 1
+                DO UPDATE SET
+                    "media_item_id" = excluded."media_item_id",
+                    "episode_id" = excluded."episode_id",
+                    "movie_id" = excluded."movie_id",
+                    "position_ticks" = excluded."position_ticks",
+                    "source" = excluded."source",
+                    "timestamp" = excluded."timestamp";
+                """);
+        }
+        // For Finished events, update an existing polling-created record if it exists.
+        // Polling uses LastPlayedDate (session start), while the real-time webhook has
         // the accurate stop timestamp.
-        if (eventType == WatchEventType.Finished)
+        else if (eventType == WatchEventType.Finished)
         {
             var existingFinished = await _context.WatchEvents
                 .FirstOrDefaultAsync(e =>
