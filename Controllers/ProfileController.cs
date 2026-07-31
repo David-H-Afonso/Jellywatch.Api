@@ -109,6 +109,15 @@ public class ProfileController : BaseApiController
     {
         var baseQuery = _context.WatchEvents
             .Where(e => e.ProfileId == profileId)
+            .Where(e => e.EventType == WatchEventType.Finished || e.EventType == WatchEventType.Removed)
+            .Where(e => !_context.WatchEvents.Any(other =>
+                other.ProfileId == e.ProfileId
+                && other.MediaItemId == e.MediaItemId
+                && other.EpisodeId == e.EpisodeId
+                && other.MovieId == e.MovieId
+                && (other.EventType == WatchEventType.Finished || other.EventType == WatchEventType.Removed)
+                && (other.Timestamp > e.Timestamp
+                    || (other.Timestamp == e.Timestamp && other.Id > e.Id))))
             .Include(e => e.MediaItem)
             .Include(e => e.Episode)
                 .ThenInclude(ep => ep!.Season)

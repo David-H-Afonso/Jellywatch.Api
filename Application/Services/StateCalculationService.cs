@@ -124,7 +124,10 @@ public class StateCalculationService : IStateCalculationService
 
         var latest = events[0];
         if (latest.EventType == WatchEventType.Finished) return WatchState.Seen;
-        if (latest.EventType == WatchEventType.Progress || latest.EventType == WatchEventType.Started) return WatchState.InProgress;
+        if (latest.EventType is WatchEventType.Progress or WatchEventType.Started or WatchEventType.Stopped)
+            return latest.PositionTicks > 0 || latest.EventType == WatchEventType.Started
+                ? WatchState.InProgress
+                : WatchState.Unseen;
         return WatchState.Unseen;
     }
 }

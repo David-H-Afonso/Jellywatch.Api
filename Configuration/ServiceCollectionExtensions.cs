@@ -4,6 +4,7 @@ using Jellywatch.Api.Application.Services;
 using Jellywatch.Api.Infrastructure.Persistence;
 using Jellywatch.Api.Infrastructure.ExternalServices;
 using Jellywatch.Api.Infrastructure.BackgroundJobs;
+using Microsoft.Data.Sqlite;
 using System.Threading.RateLimiting;
 
 namespace Jellywatch.Api.Configuration;
@@ -20,7 +21,12 @@ public static class ServiceCollectionExtensions
             databasePath = Path.GetFullPath(databasePath);
         }
 
-        var connectionString = $"Data Source={databasePath}";
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            DefaultTimeout = 30,
+            Pooling = true,
+        }.ToString();
 
         services.AddDbContext<JellywatchDbContext>(options =>
         {

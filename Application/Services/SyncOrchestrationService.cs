@@ -9,6 +9,8 @@ namespace Jellywatch.Api.Application.Services;
 
 public class SyncOrchestrationService : ISyncOrchestrationService
 {
+    private static readonly SemaphoreSlim FullSyncGate = new(1, 1);
+
     private readonly JellywatchDbContext _context;
     private readonly IJellyfinApiClient _jellyfinClient;
     private readonly IStateCalculationService _stateCalc;
@@ -185,55 +187,91 @@ public class SyncOrchestrationService : ISyncOrchestrationService
             episodeId = episode.Id;
         }
 
-        // Keep one current progress event per profile and item. Jellyfin can emit progress every
-        // second, so inserting every notification would flood both the activity feed and SQLite.
-        if (eventType == WatchEventType.Progress)
+        // Start, progress and stop are phases of one in-progress state, not separate activity
+        // entries. Keep one transient row and let Finished replace it.
+        var persistedEventType = eventType is WatchEventType.Started or WatchEventType.Stopped
+            ? WatchEventType.Progress
+            : eventType;
+
+        var sameTarget = _context.WatchEvents.Where(e =>
+            e.ProfileId == profileId
+            && e.MediaItemId == mediaItemId.Value
+            && (!episodeId.HasValue || e.EpisodeId == episodeId)
+            && (!movieId.HasValue || e.MovieId == movieId));
+
+        if (persistedEventType == WatchEventType.Progress)
         {
-            var now = DateTime.UtcNow;
-            await _context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO "watch_event"
-                    ("profile_id", "media_item_id", "episode_id", "movie_id", "jellyfin_item_id",
-                     "event_type", "position_ticks", "source", "timestamp", "CreatedAt")
-                VALUES
-                    ({profileId}, {mediaItemId.Value}, {episodeId}, {movieId}, {jellyfinItemId},
-                     {(int)eventType}, {positionTicks}, {(int)source}, {now}, {now})
-                ON CONFLICT ("profile_id", "jellyfin_item_id") WHERE "event_type" = 1
-                DO UPDATE SET
-                    "media_item_id" = excluded."media_item_id",
-                    "episode_id" = excluded."episode_id",
-                    "movie_id" = excluded."movie_id",
-                    "position_ticks" = excluded."position_ticks",
-                    "source" = excluded."source",
-                    "timestamp" = excluded."timestamp";
-                """);
+            var existingFinished = await sameTarget.AnyAsync(e => e.EventType == WatchEventType.Finished);
+            if (!existingFinished)
+            {
+                var transientEvents = await sameTarget
+                    .Where(e => e.EventType != WatchEventType.Finished)
+                    .OrderByDescending(e => e.Timestamp)
+                    .ThenByDescending(e => e.Id)
+                    .ToListAsync();
+                var transientEvent = transientEvents.FirstOrDefault();
+
+                if (transientEvent == null)
+                {
+                    _context.WatchEvents.Add(new WatchEvent
+                    {
+                        ProfileId = profileId,
+                        MediaItemId = mediaItemId.Value,
+                        EpisodeId = episodeId,
+                        MovieId = movieId,
+                        JellyfinItemId = jellyfinItemId,
+                        EventType = WatchEventType.Progress,
+                        PositionTicks = positionTicks,
+                        Source = source,
+                        Timestamp = DateTime.UtcNow,
+                    });
+                }
+                else
+                {
+                    transientEvent.JellyfinItemId = jellyfinItemId;
+                    transientEvent.EventType = WatchEventType.Progress;
+                    transientEvent.PositionTicks = positionTicks;
+                    transientEvent.Source = source;
+                    transientEvent.Timestamp = DateTime.UtcNow;
+                    if (transientEvents.Count > 1)
+                        _context.WatchEvents.RemoveRange(transientEvents.Skip(1));
+                }
+
+                await _context.SaveChangesAsync();
+            }
         }
         // For Finished events, update an existing polling-created record if it exists.
         // Polling uses LastPlayedDate (session start), while the real-time webhook has
         // the accurate stop timestamp.
-        else if (eventType == WatchEventType.Finished)
+        else if (persistedEventType == WatchEventType.Finished)
         {
-            var existingFinished = await _context.WatchEvents
-                .FirstOrDefaultAsync(e =>
-                    e.ProfileId == profileId
-                    && e.MediaItemId == mediaItemId.Value
-                    && e.EpisodeId == episodeId
-                    && e.MovieId == movieId
-                    && e.EventType == WatchEventType.Finished);
+            var targetEvents = await sameTarget
+                .OrderByDescending(e => e.EventType == WatchEventType.Finished)
+                .ThenByDescending(e => e.Timestamp)
+                .ThenByDescending(e => e.Id)
+                .ToListAsync();
+            var existingFinished = targetEvents.FirstOrDefault(e => e.EventType == WatchEventType.Finished);
 
             if (existingFinished == null)
             {
-                _context.WatchEvents.Add(new WatchEvent
+                existingFinished = targetEvents.FirstOrDefault();
+                if (existingFinished == null)
                 {
-                    ProfileId = profileId,
-                    MediaItemId = mediaItemId.Value,
-                    EpisodeId = episodeId,
-                    MovieId = movieId,
-                    JellyfinItemId = jellyfinItemId,
-                    EventType = eventType,
-                    PositionTicks = positionTicks,
-                    Source = source,
-                    Timestamp = DateTime.UtcNow,
-                });
+                    existingFinished = new WatchEvent
+                    {
+                        ProfileId = profileId,
+                        MediaItemId = mediaItemId.Value,
+                        EpisodeId = episodeId,
+                        MovieId = movieId,
+                    };
+                    _context.WatchEvents.Add(existingFinished);
+                }
+
+                existingFinished.JellyfinItemId = jellyfinItemId;
+                existingFinished.EventType = WatchEventType.Finished;
+                existingFinished.PositionTicks = positionTicks;
+                existingFinished.Source = source;
+                existingFinished.Timestamp = DateTime.UtcNow;
             }
             else if (existingFinished.Source == SyncSource.Polling)
             {
@@ -241,22 +279,8 @@ public class SyncOrchestrationService : ISyncOrchestrationService
                 existingFinished.Timestamp = DateTime.UtcNow;
                 existingFinished.Source = source;
             }
-            await _context.SaveChangesAsync();
-        }
-        else
-        {
-            _context.WatchEvents.Add(new WatchEvent
-            {
-                ProfileId = profileId,
-                MediaItemId = mediaItemId.Value,
-                EpisodeId = episodeId,
-                MovieId = movieId,
-                JellyfinItemId = jellyfinItemId,
-                EventType = eventType,
-                PositionTicks = positionTicks,
-                Source = source,
-                Timestamp = DateTime.UtcNow,
-            });
+
+            _context.WatchEvents.RemoveRange(targetEvents.Where(e => e != existingFinished));
             await _context.SaveChangesAsync();
         }
 
@@ -285,6 +309,19 @@ public class SyncOrchestrationService : ISyncOrchestrationService
     }
 
     public async Task RunFullSyncAsync(int? profileId = null)
+    {
+        await FullSyncGate.WaitAsync();
+        try
+        {
+            await RunFullSyncCoreAsync(profileId);
+        }
+        finally
+        {
+            FullSyncGate.Release();
+        }
+    }
+
+    private async Task RunFullSyncCoreAsync(int? profileId)
     {
         var syncJob = new SyncJob
         {

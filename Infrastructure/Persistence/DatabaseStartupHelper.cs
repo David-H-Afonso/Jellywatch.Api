@@ -6,6 +6,8 @@ public static class DatabaseStartupHelper
 {
     public static async Task PrepareDatabaseForMigrationsAsync(DbConnection connection, ILogger logger)
     {
+        await ConfigureSqliteAsync(connection);
+
         var hasInitialSchema = await HasInitialSchemaAsync(connection);
         var historyExists = await TableExistsAsync(connection, "__EFMigrationsHistory");
 
@@ -33,6 +35,13 @@ public static class DatabaseStartupHelper
         await RepairBackupScheduleSchemaAsync(connection, logger);
         await RepairWatchlistSchemaAsync(connection, logger);
         await RepairWatchlistCoverAndSyncColumnsAsync(connection, logger);
+    }
+
+    static async Task ConfigureSqliteAsync(DbConnection connection)
+    {
+        await ExecuteNonQueryAsync(connection, "PRAGMA busy_timeout = 30000");
+        await ExecuteNonQueryAsync(connection, "PRAGMA journal_mode = WAL");
+        await ExecuteNonQueryAsync(connection, "PRAGMA synchronous = NORMAL");
     }
 
     static async Task<bool> HasInitialSchemaAsync(DbConnection connection)
