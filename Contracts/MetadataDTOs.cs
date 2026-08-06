@@ -53,6 +53,23 @@ public class RefreshMediaItemDto
     public bool RefreshImages { get; set; } = true;
 }
 
+public class IdentifyMediaItemDto
+{
+    public int TmdbId { get; set; }
+}
+
+public class IdentifyMediaItemResultDto
+{
+    public int MediaItemId { get; set; }
+    public int SeriesId { get; set; }
+    public int TmdbId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public int MovedWatchStates { get; set; }
+    public int MergedWatchStates { get; set; }
+    public int MovedWatchEvents { get; set; }
+    public int MergedWatchEvents { get; set; }
+}
+
 public class PosterOptionDto
 {
     public int Id { get; set; }

@@ -14,6 +14,7 @@ public interface IAdminService
     Task<ServiceResult<PagedResult<MediaLibraryItemDto>>> GetMediaLibraryAsync(int? currentUserId, int page, int pageSize);
     Task<ServiceResult> DeleteMediaItemAsync(int? currentUserId, int id);
     Task<ServiceResult<object>> RefreshMediaItemAsync(int? currentUserId, int id, RefreshMediaItemDto? dto);
+    Task<ServiceResult<IdentifyMediaItemResultDto>> IdentifyMediaItemAsync(int? currentUserId, int id, IdentifyMediaItemDto dto);
     Task<ServiceResult<object>> GetPosterOptionsAsync(int? currentUserId, int id);
     Task<ServiceResult<object>> SelectPosterAsync(int? currentUserId, int id, SelectPosterDto dto);
     Task<ServiceResult<object>> GetLogoOptionsAsync(int? currentUserId, int id);

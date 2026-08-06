@@ -257,6 +257,32 @@ public class AdminService : IAdminService
         return ServiceResult<object>.Ok(new { message = "Refresh complete", title = mediaItem.Title });
     }
 
+    public async Task<ServiceResult<IdentifyMediaItemResultDto>> IdentifyMediaItemAsync(
+        int? currentUserId,
+        int id,
+        IdentifyMediaItemDto dto)
+    {
+        if (!await IsAdminAsync(currentUserId))
+            return ServiceResult<IdentifyMediaItemResultDto>.Fail("Forbidden", 403);
+
+        if (dto.TmdbId <= 0)
+            return ServiceResult<IdentifyMediaItemResultDto>.Fail("A valid TMDB ID is required", 400);
+
+        var mediaItem = await _context.MediaItems.FindAsync(id);
+        if (mediaItem is null)
+            return ServiceResult<IdentifyMediaItemResultDto>.Fail("Not found", 404);
+
+        try
+        {
+            return ServiceResult<IdentifyMediaItemResultDto>.Ok(
+                await _metadataService.IdentifyMediaItemAsync(id, dto.TmdbId));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ServiceResult<IdentifyMediaItemResultDto>.Fail(ex.Message, 409);
+        }
+    }
+
     public async Task<ServiceResult<object>> GetPosterOptionsAsync(int? currentUserId, int id)
     {
         if (!await IsAdminAsync(currentUserId))

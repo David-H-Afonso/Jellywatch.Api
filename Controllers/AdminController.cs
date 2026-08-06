@@ -85,6 +85,13 @@ public class AdminController : BaseApiController
         return ToActionResult(result);
     }
 
+    [HttpPost("media/{id:int}/identify")]
+    public async Task<IActionResult> IdentifyMediaItem(int id, [FromBody] IdentifyMediaItemDto dto)
+    {
+        var result = await _adminService.IdentifyMediaItemAsync(CurrentUserId, id, dto);
+        return ToActionResult(result);
+    }
+
     [HttpGet("media/{id:int}/poster-options")]
     public async Task<IActionResult> GetPosterOptions(int id)
     {

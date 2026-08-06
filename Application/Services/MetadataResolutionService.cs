@@ -529,6 +529,271 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         _logger.LogInformation("Refreshed media item {MediaItemId} '{Title}'", mediaItemId, mediaItem.Title);
     }
 
+    public async Task<IdentifyMediaItemResultDto> IdentifyMediaItemAsync(int mediaItemId, int tmdbId)
+    {
+        var source = await _context.MediaItems
+            .Include(x => x.Series).ThenInclude(x => x!.Seasons).ThenInclude(x => x.Episodes)
+            .FirstOrDefaultAsync(x => x.Id == mediaItemId);
+        if (source?.Series is null || source.MediaType != MediaType.Series)
+            throw new InvalidOperationException("Only series can be identified with this operation.");
+
+        var details = await _tmdbClient.GetTvDetailsAsync(tmdbId, forceRefresh: true);
+        if (details is null)
+            throw new InvalidOperationException("TMDB series was not found.");
+
+        var target = await _context.MediaItems
+            .Include(x => x.Series).ThenInclude(x => x!.Seasons).ThenInclude(x => x.Episodes)
+            .FirstOrDefaultAsync(x => x.TmdbId == tmdbId && x.MediaType == MediaType.Series && x.Id != source.Id);
+
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        target ??= source;
+
+        var sourceSeries = source.Series!;
+        var targetSeries = target.Series ?? throw new InvalidOperationException("Target series record is missing.");
+        var episodeMap = new Dictionary<int, int>();
+        var seasonMap = new Dictionary<int, int>();
+        var counters = new IdentifyCounters();
+
+        if (source.Id != target.Id)
+        {
+            foreach (var sourceSeason in sourceSeries.Seasons.ToList())
+            {
+                var targetSeason = targetSeries.Seasons.FirstOrDefault(x => x.SeasonNumber == sourceSeason.SeasonNumber);
+                if (targetSeason is null)
+                {
+                    sourceSeason.SeriesId = targetSeries.Id;
+                    targetSeries.Seasons.Add(sourceSeason);
+                    targetSeason = sourceSeason;
+                }
+                else
+                {
+                    seasonMap[sourceSeason.Id] = targetSeason.Id;
+                }
+
+                foreach (var sourceEpisode in sourceSeason.Episodes.ToList())
+                {
+                    var targetEpisode = targetSeason.Episodes.FirstOrDefault(x => x.EpisodeNumber == sourceEpisode.EpisodeNumber);
+                    if (targetEpisode is null)
+                    {
+                        sourceEpisode.SeasonId = targetSeason.Id;
+                        targetSeason.Episodes.Add(sourceEpisode);
+                        await MoveEpisodeReferencesAsync(source, target, sourceEpisode.Id, sourceEpisode.Id, counters);
+                    }
+                    else
+                    {
+                        episodeMap[sourceEpisode.Id] = targetEpisode.Id;
+                        await MoveEpisodeReferencesAsync(source, target, sourceEpisode.Id, targetEpisode.Id, counters);
+                        _context.Episodes.Remove(sourceEpisode);
+                    }
+                }
+
+                if (targetSeason.Id != sourceSeason.Id)
+                    _context.Seasons.Remove(sourceSeason);
+            }
+
+            await MoveMediaReferencesAsync(source.Id, target.Id, seasonMap, episodeMap, counters);
+            _context.Series.Remove(sourceSeries);
+            _context.MediaItems.Remove(source);
+        }
+
+        target.TmdbId = details.Id;
+        target.Title = details.Name ?? target.Title;
+        target.OriginalTitle = details.OriginalName ?? target.OriginalTitle;
+        target.Overview = details.Overview ?? target.Overview;
+        target.PosterPath = details.PosterPath ?? target.PosterPath;
+        target.BackdropPath = details.BackdropPath ?? target.BackdropPath;
+        target.ReleaseDate = details.FirstAirDate ?? target.ReleaseDate;
+        target.Status = details.Status ?? target.Status;
+        target.OriginalLanguage = details.OriginalLanguage ?? target.OriginalLanguage;
+        target.Genres = details.Genres is { Count: > 0 }
+            ? string.Join(",", details.Genres.Where(x => !string.IsNullOrEmpty(x.Name)).Select(x => x.Name))
+            : target.Genres;
+        target.ImdbId ??= details.ExternalIds?.ImdbId;
+        target.TvdbId ??= details.ExternalIds?.TvdbId;
+        targetSeries.TotalSeasons = details.NumberOfSeasons;
+        targetSeries.TotalEpisodes = details.NumberOfEpisodes;
+        targetSeries.Network ??= details.Networks?.FirstOrDefault()?.Name;
+
+        await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        await RefreshMediaItemAsync(target.Id, details.Id, refreshImages: true);
+
+        return new IdentifyMediaItemResultDto
+        {
+            MediaItemId = target.Id,
+            SeriesId = targetSeries.Id,
+            TmdbId = details.Id,
+            Title = target.Title,
+            MovedWatchStates = counters.MovedWatchStates,
+            MergedWatchStates = counters.MergedWatchStates,
+            MovedWatchEvents = counters.MovedWatchEvents,
+            MergedWatchEvents = counters.MergedWatchEvents,
+        };
+    }
+
+    private sealed class IdentifyCounters
+    {
+        public int MovedWatchStates { get; set; }
+        public int MergedWatchStates { get; set; }
+        public int MovedWatchEvents { get; set; }
+        public int MergedWatchEvents { get; set; }
+    }
+
+    private async Task MoveEpisodeReferencesAsync(MediaItem source, MediaItem target, int sourceEpisodeId, int targetEpisodeId, IdentifyCounters counters)
+    {
+        var sourceStates = await _context.ProfileWatchStates
+            .Where(x => x.MediaItemId == source.Id && x.EpisodeId == sourceEpisodeId).ToListAsync();
+        var targetStates = await _context.ProfileWatchStates
+            .Where(x => x.MediaItemId == target.Id && x.EpisodeId == targetEpisodeId).ToListAsync();
+        foreach (var state in sourceStates)
+        {
+            var existing = targetStates.FirstOrDefault(x => x.ProfileId == state.ProfileId);
+            if (existing is not null)
+            {
+                existing.UserRating ??= state.UserRating;
+                existing.IsManualOverride |= state.IsManualOverride;
+                _context.ProfileWatchStates.Remove(state);
+                counters.MergedWatchStates++;
+            }
+            else
+            {
+                state.MediaItemId = target.Id;
+                state.EpisodeId = targetEpisodeId;
+                counters.MovedWatchStates++;
+            }
+        }
+
+        var sourceEvents = await _context.WatchEvents
+            .Where(x => x.MediaItemId == source.Id && x.EpisodeId == sourceEpisodeId).ToListAsync();
+        var targetEvents = await _context.WatchEvents
+            .Where(x => x.MediaItemId == target.Id && x.EpisodeId == targetEpisodeId).ToListAsync();
+        foreach (var watchEvent in sourceEvents)
+        {
+            if (targetEvents.Any(x => x.ProfileId == watchEvent.ProfileId && x.EventType == watchEvent.EventType))
+            {
+                _context.WatchEvents.Remove(watchEvent);
+                counters.MergedWatchEvents++;
+            }
+            else
+            {
+                watchEvent.MediaItemId = target.Id;
+                watchEvent.EpisodeId = targetEpisodeId;
+                counters.MovedWatchEvents++;
+            }
+        }
+    }
+
+    private async Task MoveMediaReferencesAsync(int sourceMediaItemId, int targetMediaItemId, Dictionary<int, int> seasonMap, Dictionary<int, int> episodeMap, IdentifyCounters counters)
+    {
+        var states = await _context.ProfileWatchStates.Where(x => x.MediaItemId == sourceMediaItemId && x.EpisodeId == null).ToListAsync();
+        foreach (var state in states)
+        {
+            var targetSeasonId = state.SeasonId.HasValue && seasonMap.TryGetValue(state.SeasonId.Value, out var mappedSeasonId)
+                ? mappedSeasonId
+                : state.SeasonId;
+            var existing = await _context.ProfileWatchStates.FirstOrDefaultAsync(x =>
+                x.ProfileId == state.ProfileId && x.MediaItemId == targetMediaItemId &&
+                x.EpisodeId == null && x.MovieId == state.MovieId && x.SeasonId == targetSeasonId);
+            if (existing is not null)
+            {
+                existing.UserRating ??= state.UserRating;
+                existing.IsManualOverride |= state.IsManualOverride;
+                _context.ProfileWatchStates.Remove(state);
+                counters.MergedWatchStates++;
+            }
+            else
+            {
+                state.MediaItemId = targetMediaItemId;
+                state.SeasonId = targetSeasonId;
+                counters.MovedWatchStates++;
+            }
+        }
+
+        var events = await _context.WatchEvents.Where(x => x.MediaItemId == sourceMediaItemId && x.EpisodeId == null).ToListAsync();
+        foreach (var watchEvent in events)
+        {
+            var existing = await _context.WatchEvents.FirstOrDefaultAsync(x =>
+                x.ProfileId == watchEvent.ProfileId && x.MediaItemId == targetMediaItemId &&
+                x.EpisodeId == null && x.MovieId == watchEvent.MovieId && x.EventType == watchEvent.EventType);
+            if (existing is not null)
+            {
+                _context.WatchEvents.Remove(watchEvent);
+                counters.MergedWatchEvents++;
+            }
+            else
+            {
+                watchEvent.MediaItemId = targetMediaItemId;
+                counters.MovedWatchEvents++;
+            }
+        }
+
+        foreach (var note in await _context.ProfileNotes.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var seasonId = note.SeasonId.HasValue && seasonMap.TryGetValue(note.SeasonId.Value, out var mappedSeasonId)
+                ? mappedSeasonId
+                : note.SeasonId;
+            var episodeId = note.EpisodeId.HasValue && episodeMap.TryGetValue(note.EpisodeId.Value, out var mappedEpisodeId)
+                ? mappedEpisodeId
+                : note.EpisodeId;
+            var existing = await _context.ProfileNotes.FirstOrDefaultAsync(x =>
+                x.ProfileId == note.ProfileId && x.MediaItemId == targetMediaItemId &&
+                x.SeasonId == seasonId && x.EpisodeId == episodeId);
+            if (existing is not null) _context.ProfileNotes.Remove(note);
+            else
+            {
+                note.MediaItemId = targetMediaItemId;
+                note.SeasonId = seasonId;
+                note.EpisodeId = episodeId;
+            }
+        }
+
+        foreach (var block in await _context.ProfileMediaBlocks.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var existing = await _context.ProfileMediaBlocks.FirstOrDefaultAsync(x => x.ProfileId == block.ProfileId && x.MediaItemId == targetMediaItemId);
+            if (existing is not null) _context.ProfileMediaBlocks.Remove(block);
+            else block.MediaItemId = targetMediaItemId;
+        }
+
+        foreach (var item in await _context.JellyfinLibraryItems.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var existing = await _context.JellyfinLibraryItems.FirstOrDefaultAsync(x => x.JellyfinItemId == item.JellyfinItemId && x.Id != item.Id);
+            if (existing is not null) _context.JellyfinLibraryItems.Remove(item);
+            else item.MediaItemId = targetMediaItemId;
+        }
+
+        foreach (var item in await _context.WatchlistItems.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var existing = await _context.WatchlistItems.FirstOrDefaultAsync(x => x.WatchlistId == item.WatchlistId && x.MediaItemId == targetMediaItemId);
+            if (existing is not null) _context.WatchlistItems.Remove(item);
+            else item.MediaItemId = targetMediaItemId;
+        }
+
+        foreach (var image in await _context.MediaImages.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            image.MediaItemId = targetMediaItemId;
+            if (image.SeasonId.HasValue && seasonMap.TryGetValue(image.SeasonId.Value, out var seasonId)) image.SeasonId = seasonId;
+            if (image.EpisodeId.HasValue && episodeMap.TryGetValue(image.EpisodeId.Value, out var episodeId)) image.EpisodeId = episodeId;
+        }
+
+        foreach (var translation in await _context.MediaTranslations.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var existing = await _context.MediaTranslations.FirstOrDefaultAsync(x => x.MediaItemId == targetMediaItemId && x.Language == translation.Language);
+            if (existing is not null) _context.MediaTranslations.Remove(translation);
+            else translation.MediaItemId = targetMediaItemId;
+        }
+
+        foreach (var rating in await _context.ExternalRatings.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+        {
+            var existing = await _context.ExternalRatings.FirstOrDefaultAsync(x => x.MediaItemId == targetMediaItemId && x.Provider == rating.Provider);
+            if (existing is not null) _context.ExternalRatings.Remove(rating);
+            else rating.MediaItemId = targetMediaItemId;
+        }
+
+        foreach (var job in await _context.MetadataRefreshJobs.Where(x => x.MediaItemId == sourceMediaItemId).ToListAsync())
+            job.MediaItemId = targetMediaItemId;
+    }
+
     // --- Private helpers ---
 
     private async Task<MediaItem?> ResolveSeriesFromTmdbByIdAsync(int tmdbId)

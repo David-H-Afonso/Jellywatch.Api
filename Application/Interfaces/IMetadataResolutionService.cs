@@ -13,6 +13,7 @@ public interface IMetadataResolutionService
     Task RefreshTranslationsAsync(int mediaItemId);
     Task RefreshImagesAsync(int mediaItemId);
     Task RefreshMediaItemAsync(int mediaItemId, int? forceTmdbId = null, bool refreshImages = true);
+    Task<IdentifyMediaItemResultDto> IdentifyMediaItemAsync(int mediaItemId, int tmdbId);
     Task<List<PosterOptionDto>> GetPosterOptionsAsync(int mediaItemId);
     Task SelectPosterAsync(int mediaItemId, string remoteUrl);
     Task<List<PosterOptionDto>> GetLogoOptionsAsync(int mediaItemId);
