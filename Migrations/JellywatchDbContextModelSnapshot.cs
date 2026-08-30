@@ -594,9 +594,17 @@ namespace Jellywatch.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("backdrop_path");
 
+                    b.Property<string>("CastNames")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("cast_names");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
+
+                    b.Property<string>("DirectorNames")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("director_names");
 
                     b.Property<string>("Genres")
                         .HasColumnType("TEXT")

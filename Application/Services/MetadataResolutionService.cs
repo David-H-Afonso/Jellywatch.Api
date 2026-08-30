@@ -475,6 +475,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     mediaItem.OriginalLanguage = details.OriginalLanguage ?? mediaItem.OriginalLanguage;
                     if (details.Genres is { Count: > 0 })
                         mediaItem.Genres = string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name));
+                    mediaItem.Genres = AddAnimeGenre(mediaItem.Genres, mediaItem.OriginalLanguage);
+                    UpdateCredits(mediaItem, details.Credits);
                     if (mediaItem.ImdbId is null && details.ExternalIds?.ImdbId is not null)
                         mediaItem.ImdbId = details.ExternalIds.ImdbId;
                     if (mediaItem.TvdbId is null && details.ExternalIds?.TvdbId is not null)
@@ -508,6 +510,8 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     mediaItem.OriginalLanguage = details.OriginalLanguage ?? mediaItem.OriginalLanguage;
                     if (details.Genres is { Count: > 0 })
                         mediaItem.Genres = string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name));
+                    mediaItem.Genres = AddAnimeGenre(mediaItem.Genres, mediaItem.OriginalLanguage);
+                    UpdateCredits(mediaItem, details.Credits);
                     var effectiveImdb = details.ImdbId ?? details.ExternalIds?.ImdbId;
                     if (effectiveImdb is not null) mediaItem.ImdbId = effectiveImdb;
                     await _context.SaveChangesAsync();
@@ -608,6 +612,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         target.Genres = details.Genres is { Count: > 0 }
             ? string.Join(",", details.Genres.Where(x => !string.IsNullOrEmpty(x.Name)).Select(x => x.Name))
             : target.Genres;
+        target.Genres = AddAnimeGenre(target.Genres, target.OriginalLanguage);
         target.ImdbId ??= details.ExternalIds?.ImdbId;
         target.TvdbId ??= details.ExternalIds?.TvdbId;
         targetSeries.TotalSeasons = details.NumberOfSeasons;
@@ -852,8 +857,11 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             OriginalLanguage = details.OriginalLanguage,
             Genres = details.Genres is { Count: > 0 }
                 ? string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name))
-                : null
+                : null,
+            CastNames = GetCastNames(details.Credits),
+            DirectorNames = GetDirectorNames(details.Credits)
         };
+        mediaItem.Genres = AddAnimeGenre(mediaItem.Genres, mediaItem.OriginalLanguage);
 
         await using var transaction = await _context.Database.BeginTransactionAsync();
 
@@ -1173,8 +1181,11 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             OriginalLanguage = details.OriginalLanguage,
             Genres = details.Genres is { Count: > 0 }
                 ? string.Join(",", details.Genres.Where(g => !string.IsNullOrEmpty(g.Name)).Select(g => g.Name))
-                : null
+                : null,
+            CastNames = GetCastNames(details.Credits),
+            DirectorNames = GetDirectorNames(details.Credits)
         };
+        mediaItem.Genres = AddAnimeGenre(mediaItem.Genres, mediaItem.OriginalLanguage);
 
         await using var transaction = await _context.Database.BeginTransactionAsync();
 
@@ -1235,6 +1246,53 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         {
             await UpsertRatingAsync(mediaItemId, ExternalProvider.RottenTomatoes, rtRating.Value, null);
         }
+    }
+
+    private static void UpdateCredits(MediaItem mediaItem, TmdbCreditsResponse? credits)
+    {
+        if (credits is null) return;
+        mediaItem.CastNames = GetCastNames(credits);
+        mediaItem.DirectorNames = GetDirectorNames(credits);
+    }
+
+    private static string? GetCastNames(TmdbCreditsResponse? credits)
+    {
+        var names = credits?.Cast?
+            .OrderBy(c => c.Order)
+            .Select(c => c.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToList();
+        return names is { Count: > 0 } ? string.Join(';', names) : null;
+    }
+
+    private static string? GetDirectorNames(TmdbCreditsResponse? credits)
+    {
+        var names = credits?.Crew?
+            .Where(c => string.Equals(c.Job, "Director", StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return names is { Count: > 0 } ? string.Join(';', names) : null;
+    }
+
+    private static string? AddAnimeGenre(string? genres, string? originalLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(genres)
+            || (!string.Equals(originalLanguage, "ja", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(originalLanguage, "japanese", StringComparison.OrdinalIgnoreCase))
+            || !genres.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(genre => string.Equals(genre, "Animation", StringComparison.OrdinalIgnoreCase)))
+        {
+            return genres;
+        }
+
+        return genres.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Append("Anime")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Aggregate((left, right) => $"{left},{right}");
     }
 
     private async Task UpsertRatingAsync(int mediaItemId, ExternalProvider provider, string score, int? voteCount)

@@ -19,6 +19,8 @@ public class MediaItem
     public string? Status { get; set; }
     public string? OriginalLanguage { get; set; }
     public string? Genres { get; set; }  // Comma-separated genre list from TMDB
+    public string? CastNames { get; set; } // Semicolon-separated cast names from TMDB
+    public string? DirectorNames { get; set; } // Semicolon-separated director names from TMDB
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

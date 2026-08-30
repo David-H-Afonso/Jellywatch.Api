@@ -16,6 +16,9 @@ public class MediaQueryParameters : QueryParameters
 {
     public string? State { get; set; }
     public int? ProfileId { get; set; }
+    public string? Genre { get; set; }
+    public string? Actor { get; set; }
+    public string? Director { get; set; }
 }
 
 public class ActivityQueryParameters : QueryParameters

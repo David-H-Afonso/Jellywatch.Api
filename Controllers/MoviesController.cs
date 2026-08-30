@@ -22,6 +22,13 @@ public class MoviesController : BaseApiController
         return ToActionResult(result);
     }
 
+    [HttpGet("filters")]
+    public async Task<ActionResult<MediaFilterOptionsDto>> GetFilterOptions([FromQuery] int? profileId)
+    {
+        var result = await _mediaQueryService.GetMovieFilterOptionsAsync(profileId);
+        return ToActionResult(result);
+    }
+
     [HttpGet("{id:int}")]
     public async Task<ActionResult<MovieDetailDto>> GetMovieDetail(int id, [FromQuery] int? profileId)
     {

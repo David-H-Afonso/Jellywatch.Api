@@ -7,6 +7,7 @@ public interface IMediaQueryService
 {
     // Series
     Task<ServiceResult<PagedResult<SeriesListDto>>> GetSeriesAsync(MediaQueryParameters query);
+    Task<ServiceResult<MediaFilterOptionsDto>> GetSeriesFilterOptionsAsync(int? profileId);
     Task<ServiceResult<SeriesDetailDto>> GetSeriesDetailAsync(int id, int? profileId, int? currentUserId);
     Task<ServiceResult<List<SeasonDto>>> GetSeasonsAsync(int seriesId, int? profileId);
     Task<ServiceResult<List<EpisodeDto>>> GetEpisodesAsync(int seasonId, int? profileId);
@@ -17,6 +18,7 @@ public interface IMediaQueryService
 
     // Movies
     Task<ServiceResult<PagedResult<MovieListDto>>> GetMoviesAsync(MediaQueryParameters query);
+    Task<ServiceResult<MediaFilterOptionsDto>> GetMovieFilterOptionsAsync(int? profileId);
     Task<ServiceResult<MovieDetailDto>> GetMovieDetailAsync(int id, int? profileId);
     Task<ServiceResult<object>> RateMovieAsync(int id, int profileId, UserRatingDto dto);
     Task<ServiceResult<List<CastMemberDto>>> GetMovieCreditsAsync(int id);

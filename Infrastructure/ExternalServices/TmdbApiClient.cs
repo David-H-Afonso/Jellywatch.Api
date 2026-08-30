@@ -98,7 +98,7 @@ public class TmdbApiClient : ITmdbApiClient
             }
         }
 
-        var url = $"{BaseUrl}/tv/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids";
+        var url = $"{BaseUrl}/tv/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids,credits";
         var result = await SendWithRetryAsync<TmdbTvDetails>(url);
 
         if (result is not null)
@@ -142,7 +142,7 @@ public class TmdbApiClient : ITmdbApiClient
             }
         }
 
-        var url = $"{BaseUrl}/movie/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids";
+        var url = $"{BaseUrl}/movie/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids,credits";
         var result = await SendWithRetryAsync<TmdbMovieDetails>(url);
 
         if (result is not null)

@@ -135,6 +135,9 @@ public class TmdbTvDetails
 
     [JsonPropertyName("genres")]
     public List<TmdbGenre>? Genres { get; set; }
+
+    [JsonPropertyName("credits")]
+    public TmdbCreditsResponse? Credits { get; set; }
 }
 
 public class TmdbMovieDetails
@@ -183,6 +186,9 @@ public class TmdbMovieDetails
 
     [JsonPropertyName("genres")]
     public List<TmdbGenre>? Genres { get; set; }
+
+    [JsonPropertyName("credits")]
+    public TmdbCreditsResponse? Credits { get; set; }
 }
 
 public class TmdbSeasonSummary
@@ -360,6 +366,9 @@ public class TmdbCreditsResponse
 {
     [JsonPropertyName("cast")]
     public List<TmdbCastMember>? Cast { get; set; }
+
+    [JsonPropertyName("crew")]
+    public List<TmdbCrewMember>? Crew { get; set; }
 }
 
 public class TmdbCastMember
@@ -384,6 +393,24 @@ public class TmdbAggregateCreditsResponse
 {
     [JsonPropertyName("cast")]
     public List<TmdbAggregateCastMember>? Cast { get; set; }
+
+    [JsonPropertyName("crew")]
+    public List<TmdbCrewMember>? Crew { get; set; }
+}
+
+public class TmdbCrewMember
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("job")]
+    public string? Job { get; set; }
+
+    [JsonPropertyName("department")]
+    public string? Department { get; set; }
 }
 
 public class TmdbAggregateCastMember

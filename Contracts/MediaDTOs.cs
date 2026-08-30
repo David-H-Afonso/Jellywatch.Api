@@ -17,6 +17,7 @@ public class SeriesListDto
     public string? ReleaseDate { get; set; }
     public decimal? UserRating { get; set; }
     public double? TmdbRating { get; set; }
+    public string? Genres { get; set; }
 }
 
 public class SeriesDetailDto
@@ -58,6 +59,14 @@ public class MovieListDto
     public string? ReleaseDate { get; set; }
     public decimal? UserRating { get; set; }
     public double? TmdbRating { get; set; }
+    public string? Genres { get; set; }
+}
+
+public class MediaFilterOptionsDto
+{
+    public List<string> Genres { get; set; } = new();
+    public List<string> Actors { get; set; } = new();
+    public List<string> Directors { get; set; } = new();
 }
 
 public class MovieDetailDto

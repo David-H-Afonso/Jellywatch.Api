@@ -24,6 +24,8 @@ public class MediaItemConfiguration : IEntityTypeConfiguration<MediaItem>
         e.Property(x => x.Status).HasColumnName("status");
         e.Property(x => x.OriginalLanguage).HasColumnName("original_language");
         e.Property(x => x.Genres).HasColumnName("genres");
+        e.Property(x => x.CastNames).HasColumnName("cast_names");
+        e.Property(x => x.DirectorNames).HasColumnName("director_names");
         e.Property(x => x.CreatedAt).HasColumnName("created_at");
         e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         e.HasIndex(x => x.TmdbId);

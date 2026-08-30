@@ -51,8 +51,13 @@ public class MediaQueryService : IMediaQueryService
             var search = query.Search.ToLower();
             baseQuery = baseQuery.Where(s =>
                 s.MediaItem.Title.ToLower().Contains(search) ||
-                (s.MediaItem.OriginalTitle != null && s.MediaItem.OriginalTitle.ToLower().Contains(search)));
+                (s.MediaItem.OriginalTitle != null && s.MediaItem.OriginalTitle.ToLower().Contains(search)) ||
+                (s.MediaItem.Genres != null && s.MediaItem.Genres.ToLower().Contains(search)) ||
+                (s.MediaItem.CastNames != null && s.MediaItem.CastNames.ToLower().Contains(search)) ||
+                (s.MediaItem.DirectorNames != null && s.MediaItem.DirectorNames.ToLower().Contains(search)));
         }
+
+        ApplyMediaFilters(ref baseQuery, query, s => s.MediaItem);
 
         var projected = baseQuery.Select(s => new SeriesListDto
         {
@@ -89,7 +94,8 @@ public class MediaQueryService : IMediaQueryService
             TmdbRating = s.MediaItem.ExternalRatings
                 .Where(er => er.Provider == ExternalProvider.Tmdb)
                 .Select(er => er.Score != null ? (double?)Convert.ToDouble(er.Score) : null)
-                .FirstOrDefault()
+                .FirstOrDefault(),
+            Genres = s.MediaItem.Genres
         });
 
         // State filter
@@ -152,6 +158,23 @@ public class MediaQueryService : IMediaQueryService
             Page = query.Page,
             PageSize = query.PageSize
         });
+    }
+
+    public async Task<ServiceResult<MediaFilterOptionsDto>> GetSeriesFilterOptionsAsync(int? profileId)
+    {
+        var query = _context.Series.AsQueryable();
+        if (profileId.HasValue)
+        {
+            query = query.Where(s => s.Seasons.Any(sea => sea.Episodes.Any(ep =>
+                ep.WatchStates.Any(ws => ws.ProfileId == profileId.Value)))
+                || s.MediaItem.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+            query = query.Where(s => !_context.ProfileMediaBlocks.Any(b =>
+                b.ProfileId == profileId.Value && b.MediaItemId == s.MediaItemId));
+        }
+
+        var media = await query.Select(s => s.MediaItem).ToListAsync();
+        await BackfillCreditsAsync(media, isSeries: true);
+        return ServiceResult<MediaFilterOptionsDto>.Ok(BuildFilterOptions(media));
     }
 
     public async Task<ServiceResult<SeriesDetailDto>> GetSeriesDetailAsync(int id, int? profileId, int? currentUserId)
@@ -568,8 +591,13 @@ public class MediaQueryService : IMediaQueryService
             var search = query.Search.ToLower();
             baseQuery = baseQuery.Where(m =>
                 m.MediaItem.Title.ToLower().Contains(search) ||
-                (m.MediaItem.OriginalTitle != null && m.MediaItem.OriginalTitle.ToLower().Contains(search)));
+                (m.MediaItem.OriginalTitle != null && m.MediaItem.OriginalTitle.ToLower().Contains(search)) ||
+                (m.MediaItem.Genres != null && m.MediaItem.Genres.ToLower().Contains(search)) ||
+                (m.MediaItem.CastNames != null && m.MediaItem.CastNames.ToLower().Contains(search)) ||
+                (m.MediaItem.DirectorNames != null && m.MediaItem.DirectorNames.ToLower().Contains(search)));
         }
+
+        ApplyMediaFilters(ref baseQuery, query, m => m.MediaItem);
 
         var projected = baseQuery.Select(m => new MovieListDto
         {
@@ -590,7 +618,8 @@ public class MediaQueryService : IMediaQueryService
             TmdbRating = m.MediaItem.ExternalRatings
                 .Where(er => er.Provider == ExternalProvider.Tmdb)
                 .Select(er => er.Score != null ? (double?)Convert.ToDouble(er.Score) : null)
-                .FirstOrDefault()
+                .FirstOrDefault(),
+            Genres = m.MediaItem.Genres
         });
 
         if (!string.IsNullOrWhiteSpace(query.State) && Enum.TryParse<WatchState>(query.State, true, out var stateFilter))
@@ -652,6 +681,21 @@ public class MediaQueryService : IMediaQueryService
             Page = query.Page,
             PageSize = query.PageSize
         });
+    }
+
+    public async Task<ServiceResult<MediaFilterOptionsDto>> GetMovieFilterOptionsAsync(int? profileId)
+    {
+        var query = _context.Movies.AsQueryable();
+        if (profileId.HasValue)
+        {
+            query = query.Where(m => m.WatchStates.Any(ws => ws.ProfileId == profileId.Value));
+            query = query.Where(m => !_context.ProfileMediaBlocks.Any(b =>
+                b.ProfileId == profileId.Value && b.MediaItemId == m.MediaItemId));
+        }
+
+        var media = await query.Select(m => m.MediaItem).ToListAsync();
+        await BackfillCreditsAsync(media, isSeries: false);
+        return ServiceResult<MediaFilterOptionsDto>.Ok(BuildFilterOptions(media));
     }
 
     public async Task<ServiceResult<MovieDetailDto>> GetMovieDetailAsync(int id, int? profileId)
@@ -826,6 +870,141 @@ public class MediaQueryService : IMediaQueryService
         return rating < MinUserRating || rating > MaxUserRating
             ? ServiceResult<object>.Fail($"Rating must be between {MinUserRating} and {MaxUserRating}", 400)
             : null;
+    }
+
+    private static void ApplyMediaFilters<TEntity>(
+        ref IQueryable<TEntity> query,
+        MediaQueryParameters parameters,
+        System.Linq.Expressions.Expression<Func<TEntity, MediaItem>> mediaSelector)
+    {
+        if (!string.IsNullOrWhiteSpace(parameters.Genre))
+        {
+            var genre = parameters.Genre.Trim().ToLower();
+            query = query.Where(BuildDelimitedContainsExpression(mediaSelector, nameof(MediaItem.Genres), genre, ',')).AsQueryable();
+        }
+
+        if (!string.IsNullOrWhiteSpace(parameters.Actor))
+        {
+            var actor = parameters.Actor.Trim().ToLower();
+            query = query.Where(BuildDelimitedContainsExpression(mediaSelector, nameof(MediaItem.CastNames), actor, ';')).AsQueryable();
+        }
+
+        if (!string.IsNullOrWhiteSpace(parameters.Director))
+        {
+            var director = parameters.Director.Trim().ToLower();
+            query = query.Where(BuildDelimitedContainsExpression(mediaSelector, nameof(MediaItem.DirectorNames), director, ';')).AsQueryable();
+        }
+
+    }
+
+    private static System.Linq.Expressions.Expression<Func<TEntity, bool>> BuildDelimitedContainsExpression<TEntity>(
+        System.Linq.Expressions.Expression<Func<TEntity, MediaItem>> selector,
+        string propertyName,
+        string value,
+        char separator)
+    {
+        var parameter = selector.Parameters[0];
+        var media = selector.Body;
+        var member = System.Linq.Expressions.Expression.Property(media, propertyName);
+        var coalesce = System.Linq.Expressions.Expression.Coalesce(member, System.Linq.Expressions.Expression.Constant(string.Empty));
+        var normalized = System.Linq.Expressions.Expression.Call(
+            System.Linq.Expressions.Expression.Call(coalesce, nameof(string.ToLower), Type.EmptyTypes),
+            nameof(string.Replace), Type.EmptyTypes,
+            System.Linq.Expressions.Expression.Constant($"{separator} "),
+            System.Linq.Expressions.Expression.Constant(separator.ToString()));
+        var padded = System.Linq.Expressions.Expression.Add(
+            System.Linq.Expressions.Expression.Add(
+                System.Linq.Expressions.Expression.Constant(separator.ToString()), normalized),
+            System.Linq.Expressions.Expression.Constant(separator.ToString()));
+        var needle = System.Linq.Expressions.Expression.Constant($"{separator}{value}{separator}");
+        var contains = System.Linq.Expressions.Expression.Call(padded, nameof(string.Contains), Type.EmptyTypes, needle);
+        return System.Linq.Expressions.Expression.Lambda<Func<TEntity, bool>>(contains, parameter);
+    }
+
+    private static MediaFilterOptionsDto BuildFilterOptions(IEnumerable<MediaItem> media)
+    {
+        static IEnumerable<string> Split(IEnumerable<string?> values, char separator) => values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .SelectMany(value => value!.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
+
+        var items = media.ToList();
+        return new MediaFilterOptionsDto
+        {
+            Genres = Split(items.Select(item => item.Genres), ',').ToList(),
+            Actors = Split(items.Select(item => item.CastNames), ';').ToList(),
+            Directors = Split(items.Select(item => item.DirectorNames), ';').ToList()
+        };
+    }
+
+    private async Task BackfillCreditsAsync(IEnumerable<MediaItem> media, bool isSeries)
+    {
+        if (!_tmdbClient.IsConfigured) return;
+
+        var pending = media
+            .Where(item => item.TmdbId.HasValue
+                && (string.IsNullOrWhiteSpace(item.CastNames) || string.IsNullOrWhiteSpace(item.DirectorNames)))
+            .GroupBy(item => item.TmdbId!.Value)
+            .Select(group => group.ToList())
+            .ToList();
+
+        foreach (var items in pending)
+        {
+            if (isSeries)
+            {
+                var credits = await _tmdbClient.GetTvAggregateCreditsAsync(items[0].TmdbId!.Value);
+                if (credits is null) continue;
+
+                var castNames = credits.Cast?
+                    .OrderBy(c => c.Order)
+                    .Select(c => c.Name)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(20)
+                    .ToList();
+                var directorNames = credits.Crew?
+                    .Where(c => string.Equals(c.Job, "Director", StringComparison.OrdinalIgnoreCase))
+                    .Select(c => c.Name)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var item in items)
+                {
+                    if (castNames is { Count: > 0 }) item.CastNames = string.Join(';', castNames);
+                    if (directorNames is { Count: > 0 }) item.DirectorNames = string.Join(';', directorNames);
+                }
+            }
+            else
+            {
+                var credits = await _tmdbClient.GetMovieCreditsAsync(items[0].TmdbId!.Value);
+                if (credits is null) continue;
+
+                var castNames = credits.Cast?
+                    .OrderBy(c => c.Order)
+                    .Select(c => c.Name)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(20)
+                    .ToList();
+                var directorNames = credits.Crew?
+                    .Where(c => string.Equals(c.Job, "Director", StringComparison.OrdinalIgnoreCase))
+                    .Select(c => c.Name)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var item in items)
+                {
+                    if (castNames is { Count: > 0 }) item.CastNames = string.Join(';', castNames);
+                    if (directorNames is { Count: > 0 }) item.DirectorNames = string.Join(';', directorNames);
+                }
+            }
+        }
+
+        if (pending.Count > 0)
+            await _context.SaveChangesAsync();
     }
 
     private async Task<bool> WatchlistTreeContainsDashboardMediaAsync(

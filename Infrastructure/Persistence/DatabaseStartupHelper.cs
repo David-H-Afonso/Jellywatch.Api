@@ -35,6 +35,7 @@ public static class DatabaseStartupHelper
         await RepairBackupScheduleSchemaAsync(connection, logger);
         await RepairWatchlistSchemaAsync(connection, logger);
         await RepairWatchlistCoverAndSyncColumnsAsync(connection, logger);
+        await RepairAnimeGenreSchemaAsync(connection, logger);
     }
 
     static async Task ConfigureSqliteAsync(DbConnection connection)
@@ -82,6 +83,8 @@ public static class DatabaseStartupHelper
             ("media_item", "imdb_id", "TEXT"),
             ("media_item", "original_language", "TEXT"),
             ("media_item", "genres", "TEXT"),
+            ("media_item", "cast_names", "TEXT"),
+            ("media_item", "director_names", "TEXT"),
             ("episode", "air_time", "TEXT"),
             ("episode", "air_time_utc", "TEXT"),
             ("episode", "TmdbRating", "REAL"),
@@ -95,6 +98,7 @@ public static class DatabaseStartupHelper
         }
 
         await RepairProfileWatchStateDataAsync(connection, logger);
+        await RecordMigrationIfMissingAsync(connection, "20260830130000_AddMediaCreditsForFiltering", logger);
     }
 
     static async Task RepairBackupScheduleSchemaAsync(DbConnection connection, ILogger logger)
@@ -147,6 +151,22 @@ public static class DatabaseStartupHelper
         // jellyfin_playlist_user_id — store which Jellyfin user owns the synced playlist
         await AddColumnIfMissingAsync(connection, "watchlist", "jellyfin_playlist_user_id", "TEXT", logger);
         await RecordMigrationIfMissingAsync(connection, "20260622142154_AddWatchlistJellyfinPlaylistUserId", logger);
+    }
+
+    static async Task RepairAnimeGenreSchemaAsync(DbConnection connection, ILogger logger)
+    {
+        if (!await TableExistsAsync(connection, "media_item")) return;
+
+        await ExecuteLoggedNonQueryAsync(connection, """
+            UPDATE "media_item"
+            SET "genres" = "genres" || ',Anime'
+            WHERE "genres" IS NOT NULL
+              AND lower("genres") LIKE '%animation%'
+              AND lower(COALESCE("original_language", '')) IN ('ja', 'japanese')
+              AND lower(',' || replace("genres", ', ', ',') || ',') NOT LIKE '%,anime,%'
+            """, logger, "Added Anime genre tag to {Count} media item(s).");
+
+        await RecordMigrationIfMissingAsync(connection, "20260830143000_AddAnimeGenreTag", logger);
     }
 
     static async Task EnsureBlacklistedItemsSchemaAsync(DbConnection connection, ILogger logger)
