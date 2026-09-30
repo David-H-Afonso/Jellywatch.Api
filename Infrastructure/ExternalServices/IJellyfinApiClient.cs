@@ -11,6 +11,7 @@ public class JellyfinAuthResult
 
 public interface IJellyfinApiClient
 {
+    Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
     Task<JellyfinAuthResult?> AuthenticateAsync(string serverUrl, string username, string password);
     Task<List<JellyfinUserInfo>> GetUsersAsync();
     Task<List<JellyfinLibraryInfo>> GetLibrariesAsync(string userId);

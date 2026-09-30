@@ -9,6 +9,9 @@ namespace Jellywatch.Api.Infrastructure.ExternalServices;
 
 public class JellyfinApiClient : IJellyfinApiClient
 {
+    private const string AuthorizationParameters =
+        "Client=\"Jellywatch\", Device=\"Server\", DeviceId=\"jellywatch-api\", Version=\"0.1.0\"";
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly JellyfinSettings _settings;
     private readonly ILogger<JellyfinApiClient> _logger;
@@ -29,12 +32,18 @@ public class JellyfinApiClient : IJellyfinApiClient
         _serverUrl = _settings.BaseUrl;
     }
 
+    public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
+    {
+        var client = CreateAuthenticatedClient();
+        var response = await client.GetAsync("/System/Info", cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
     public async Task<JellyfinAuthResult?> AuthenticateAsync(string serverUrl, string username, string password)
     {
         var client = _httpClientFactory.CreateClient("JellyfinClient");
         client.BaseAddress = new Uri(serverUrl.TrimEnd('/'));
-        client.DefaultRequestHeaders.Add("X-Emby-Authorization",
-            "MediaBrowser Client=\"Jellywatch\", Device=\"Server\", DeviceId=\"jellywatch-api\", Version=\"0.1.0\"");
+        SetAuthorization(client);
 
         var payload = JsonSerializer.Serialize(new { Username = username, Pw = password });
         var content = new StringContent(payload, Encoding.UTF8, "application/json");
@@ -177,12 +186,18 @@ public class JellyfinApiClient : IJellyfinApiClient
         if (!string.IsNullOrEmpty(_serverUrl))
             client.BaseAddress = new Uri(_serverUrl);
 
-        if (!string.IsNullOrEmpty(_settings.ApiKey))
-            client.DefaultRequestHeaders.Add("X-Emby-Token", _settings.ApiKey);
-        else if (!string.IsNullOrEmpty(_accessToken))
-            client.DefaultRequestHeaders.Add("X-Emby-Token", _accessToken);
+        var token = !string.IsNullOrEmpty(_settings.ApiKey) ? _settings.ApiKey : _accessToken;
+        SetAuthorization(client, token);
 
         return client;
+    }
+
+    private static void SetAuthorization(HttpClient client, string? token = null)
+    {
+        var parameters = string.IsNullOrEmpty(token)
+            ? AuthorizationParameters
+            : $"{AuthorizationParameters}, Token=\"{token}\"";
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("MediaBrowser", parameters);
     }
 
     public async Task<List<JellyfinActivityEntry>> GetActivityLogAsync(DateTime? minDate = null, int limit = 2000)
