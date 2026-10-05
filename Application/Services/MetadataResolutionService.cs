@@ -202,7 +202,11 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                 await _context.SaveChangesAsync();
             }
 
-            if (seasonDetails?.Episodes is null) continue;
+            if (seasonDetails?.Episodes is null)
+            {
+                if (forceRefresh) throw new InvalidOperationException($"TMDB did not return season {tmdbSeason.SeasonNumber} episodes; refresh was incomplete.");
+                continue;
+            }
 
             foreach (var tmdbEp in seasonDetails.Episodes)
             {
@@ -483,12 +487,15 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         if (mediaItem is null) return;
 
         var effectiveTmdbId = forceTmdbId ?? mediaItem.TmdbId;
+        if (effectiveTmdbId.HasValue && !_tmdbClient.IsConfigured)
+            throw new InvalidOperationException("TMDB API key is not configured; metadata was not refreshed.");
 
         if (effectiveTmdbId.HasValue && _tmdbClient.IsConfigured)
         {
             if (mediaItem.MediaType == MediaType.Series)
             {
                 var details = await _tmdbClient.GetTvDetailsAsync(effectiveTmdbId.Value, forceRefresh: true, cancellationToken: cancellationToken);
+                if (details is null) throw new InvalidOperationException("TMDB did not return series metadata; refresh was not completed.");
                 if (details is not null)
                 {
                     mediaItem.TmdbId = details.Id;
@@ -524,6 +531,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             else
             {
                 var details = await _tmdbClient.GetMovieDetailsAsync(effectiveTmdbId.Value, forceRefresh: true);
+                if (details is null) throw new InvalidOperationException("TMDB did not return movie metadata; refresh was not completed.");
                 if (details is not null)
                 {
                     mediaItem.TmdbId = details.Id;

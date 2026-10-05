@@ -330,8 +330,15 @@ public class AdminService : IAdminService
         if (!await IsAdminAsync(currentUserId))
             return ServiceResult<object>.Fail("Forbidden", 403);
 
-        var count = await _metadataService.RefreshAllMetadataAsync();
-        return ServiceResult<object>.Ok(new { message = $"Refreshed metadata for {count} items", count });
+        var job = await new BulkMetadataService(_context).EnqueueAsync();
+        return ServiceResult<object>.Ok(job);
+    }
+
+    public async Task<ServiceResult<BulkMetadataJobDto?>> GetMetadataRefreshStatusAsync(int? currentUserId)
+    {
+        if (!await IsAdminAsync(currentUserId))
+            return ServiceResult<BulkMetadataJobDto?>.Fail("Forbidden", 403);
+        return ServiceResult<BulkMetadataJobDto?>.Ok(await new BulkMetadataService(_context).GetLatestAsync());
     }
 
     public async Task<ServiceResult<object>> RefreshAllImagesAsync(int? currentUserId)

@@ -10,8 +10,9 @@ public sealed class WebPushSettings
     public string Subject { get; set; } = string.Empty;
     public int WorkerIntervalSeconds { get; set; } = 300;
     public bool MetadataRefreshEnabled { get; set; } = true;
-    public int MetadataScanIntervalMinutes { get; set; } = 60;
-    public int MetadataBatchSize { get; set; } = 10;
+    public int MetadataDailyHour { get; set; } = 3;
+    public string MetadataTimeZoneId { get; set; } = "Europe/Madrid";
+    public int MetadataItemDelaySeconds { get; set; } = 5;
     public int MaxAttempts { get; set; } = 3;
 
     public bool HasVapidConfiguration =>

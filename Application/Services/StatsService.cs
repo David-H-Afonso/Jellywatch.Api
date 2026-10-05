@@ -424,18 +424,34 @@ public class StatsService : IStatsService
             })
             .ToListAsync();
 
-        // For batch-drop releases (multiple episodes same series same day), only keep the first
+        var upcomingSeriesIds = upcoming.Select(ep => ep.SeriesId).Distinct().ToList();
+        var seasonSizes = await _context.Seasons.AsNoTracking()
+            .Where(season => upcomingSeriesIds.Contains(season.SeriesId))
+            .Select(season => new
+            {
+                season.SeriesId,
+                season.SeasonNumber,
+                season.EpisodeCount,
+                KnownEpisodes = season.Episodes.Count,
+                LastEpisode = season.Episodes.Select(ep => (int?)ep.EpisodeNumber).Max()
+            })
+            .ToListAsync();
+
+        // A batch belongs to one season. Pick its lowest episode number, regardless of
+        // inconsistent/missing broadcast times on sibling episodes.
         upcoming = upcoming
-            .GroupBy(ep => (ep.MediaItemId, ep.AirDate))
+            .GroupBy(ep => (ep.MediaItemId, ep.SeasonNumber, ep.AirDate))
             .Select(g =>
             {
                 var first = g
-                    .OrderBy(GetUpcomingSortTime)
-                    .ThenBy(ep => ep.SeriesTitle)
-                    .ThenBy(ep => ep.SeasonNumber)
-                    .ThenBy(ep => ep.EpisodeNumber)
+                    .OrderBy(ep => ep.EpisodeNumber)
                     .First();
                 first.BatchCount = g.Count();
+                var season = seasonSizes.FirstOrDefault(s => s.SeriesId == first.SeriesId && s.SeasonNumber == first.SeasonNumber);
+                var expected = Math.Max(season?.EpisodeCount ?? 0, Math.Max(season?.KnownEpisodes ?? 0, season?.LastEpisode ?? 0));
+                var numbers = g.Select(ep => ep.EpisodeNumber).Distinct().OrderBy(number => number).ToArray();
+                first.IsFullSeasonRelease = first.SeasonNumber > 0 && expected > 1
+                    && numbers.SequenceEqual(Enumerable.Range(1, expected));
                 return first;
             })
             .OrderBy(GetUpcomingSortTime)

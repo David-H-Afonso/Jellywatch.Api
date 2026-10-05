@@ -20,6 +20,7 @@ public interface IAdminService
     Task<ServiceResult<object>> GetLogoOptionsAsync(int? currentUserId, int id);
     Task<ServiceResult<object>> SelectLogoAsync(int? currentUserId, int id, SelectPosterDto dto);
     Task<ServiceResult<object>> RefreshAllMetadataAsync(int? currentUserId);
+    Task<ServiceResult<BulkMetadataJobDto?>> GetMetadataRefreshStatusAsync(int? currentUserId);
     Task<ServiceResult<object>> RefreshAllImagesAsync(int? currentUserId);
     Task<ServiceResult<object>> PurgeProfileMediaAsync(int? currentUserId, int profileId);
     Task<ServiceResult<object>> DeleteProfileAsync(int? currentUserId, int id);

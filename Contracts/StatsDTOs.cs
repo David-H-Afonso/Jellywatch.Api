@@ -142,4 +142,5 @@ public class UpcomingEpisodeDto
     public string? AirTime { get; set; }
     public string? AirTimeUtc { get; set; }
     public int BatchCount { get; set; } = 1;
+    public bool IsFullSeasonRelease { get; set; }
 }

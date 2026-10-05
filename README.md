@@ -115,7 +115,8 @@ See the root `docker-compose.casaos.yml` for CasaOS deployment.
 | Method | Route                                   | Description           |
 | ------ | --------------------------------------- | --------------------- |
 | GET    | `/api/admin/users`                      | List users            |
-| POST   | `/api/admin/media/refresh-all-metadata` | Bulk metadata refresh |
+| POST   | `/api/admin/media/refresh-all-metadata` | Queue bulk metadata refresh; returns 202 with job progress |
+| GET    | `/api/admin/media/refresh-all-metadata/status` | Latest bulk metadata refresh progress (admin only) |
 | POST   | `/api/admin/media/refresh-all-images`   | Bulk image refresh    |
 
 ### Data Import
@@ -139,8 +140,9 @@ Configuration via `appsettings.json` or environment variables:
 | `DatabaseSettings:DatabasePath` | SQLite database path |
 | `WebPush:Enabled` | Enable VAPID push registration and delivery (default `true`; delivery also needs VAPID keys) |
 | `WebPush:PublicKey` / `WebPush:PrivateKey` / `WebPush:Subject` | Server-side Web Push VAPID configuration |
-| `WebPush:MetadataRefreshEnabled` | Periodically refresh tracked TMDB series (default `true`) |
-| `WebPush:MetadataScanIntervalMinutes` / `WebPush:MetadataBatchSize` | Metadata worker interval and per-pass series batch |
+| `WebPush:MetadataRefreshEnabled` | Enable daily full-library metadata refresh (default `true`, independent of Push) |
+| `WebPush:MetadataDailyHour` / `WebPush:MetadataTimeZoneId` | Daily start hour (default `3`) and timezone (default `Europe/Madrid`) |
+| `WebPush:MetadataItemDelaySeconds` | Pause after each title finishes (default `5` seconds, minimum `1`) |
 | `WebPush:WorkerIntervalSeconds` | Push delivery worker interval |
 
 Generate a stable VAPID key pair once (for example, `npx --yes web-push generate-vapid-keys`) and store it in the API container environment:
@@ -159,8 +161,12 @@ including existing accounts when this migration is applied; users can turn it of
 
 Production may also set `JELLYWATCH_WEBPUSH_PUBLIC_KEY`,
 `JELLYWATCH_WEBPUSH_PRIVATE_KEY`, `JELLYWATCH_WEBPUSH_SUBJECT`,
-`JELLYWATCH_METADATA_REFRESH_ENABLED`, `JELLYWATCH_METADATA_SCAN_INTERVAL_MINUTES`,
-`JELLYWATCH_METADATA_BATCH_SIZE`, and `JELLYWATCH_WEBPUSH_WORKER_INTERVAL_SECONDS`.
+`JELLYWATCH_METADATA_REFRESH_ENABLED`, `JELLYWATCH_METADATA_DAILY_HOUR`,
+`JELLYWATCH_METADATA_TIMEZONE`, `JELLYWATCH_METADATA_ITEM_DELAY_SECONDS`, and `JELLYWATCH_WEBPUSH_WORKER_INTERVAL_SECONDS`.
+At 03:00 Europe/Madrid, the worker queues the full library and processes one title at a time,
+waiting five seconds after each title completes. A persistent daily marker prevents restart duplicates;
+startup after 03:00 catches up today's cycle only. An active manual/daily refresh covers the current day
+instead of creating a second job. Progress is available in Admin through the same status endpoint.
 Keep the VAPID private key only in the API server environment. Users opt in on Settings
 per browser/device. New-season and premiere notices are sent only to subscribed users with
 a profile watch state of In Progress or Seen for the series. Premiere notices are scheduled

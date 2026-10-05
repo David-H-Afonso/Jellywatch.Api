@@ -3,6 +3,7 @@ using System;
 using Jellywatch.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Jellywatch.Api.Migrations
 {
     [DbContext(typeof(JellywatchDbContext))]
-    partial class JellywatchDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261005125539_AddBulkMetadataJob")]
+    partial class AddBulkMetadataJob
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.0");
@@ -758,25 +761,6 @@ namespace Jellywatch.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("media_translation", (string)null);
-                });
-
-            modelBuilder.Entity("Jellywatch.Api.Domain.Entities.MetadataDailyCycle", b =>
-                {
-                    b.Property<string>("LocalDate")
-                        .HasMaxLength(10)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("JobId")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("LocalDate");
-
-                    b.HasIndex("JobId");
-
-                    b.ToTable("metadata_daily_cycle", (string)null);
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.Entities.MetadataRefreshJob", b =>
@@ -2052,17 +2036,6 @@ namespace Jellywatch.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("MediaItem");
-                });
-
-            modelBuilder.Entity("Jellywatch.Api.Domain.Entities.MetadataDailyCycle", b =>
-                {
-                    b.HasOne("Jellywatch.Api.Domain.Entities.BulkMetadataJob", "Job")
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Job");
                 });
 
             modelBuilder.Entity("Jellywatch.Api.Domain.Entities.MetadataRefreshJob", b =>

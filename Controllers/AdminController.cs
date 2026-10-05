@@ -124,8 +124,12 @@ public class AdminController : BaseApiController
     public async Task<IActionResult> RefreshAllMetadata()
     {
         var result = await _adminService.RefreshAllMetadataAsync(CurrentUserId);
-        return ToActionResult(result);
+        return result.Success ? Accepted(result.Data) : ToActionResult(result);
     }
+
+    [HttpGet("media/refresh-all-metadata/status")]
+    public async Task<IActionResult> MetadataRefreshStatus() =>
+        ToActionResult(await _adminService.GetMetadataRefreshStatusAsync(CurrentUserId));
 
     [HttpPost("media/refresh-all-images")]
     public async Task<IActionResult> RefreshAllImages()

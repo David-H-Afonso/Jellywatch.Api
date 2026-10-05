@@ -56,7 +56,9 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ImportQueueWorker>();
         services.AddScoped<IPushNotificationService, PushNotificationService>();
         services.AddSingleton<IWebPushSender, WebPushSender>();
-        services.AddHostedService<MetadataRefreshWorker>();
+        services.AddSingleton<MetadataWriteGate>();
+        services.AddScoped<BulkMetadataService>();
+        services.AddHostedService<BulkMetadataWorker>();
         services.AddHostedService<PushNotificationWorker>();
 
         services.AddScoped<IAssetCacheService, AssetCacheService>();
@@ -368,8 +370,11 @@ public static class ServiceCollectionExtensions
         builder.Configuration["WebPush:Subject"] = Environment.GetEnvironmentVariable("JELLYWATCH_WEBPUSH_SUBJECT")
             ?? builder.Configuration["WebPush:Subject"];
         ApplyPositiveIntOverride(builder, "JELLYWATCH_WEBPUSH_WORKER_INTERVAL_SECONDS", "WebPush:WorkerIntervalSeconds");
-        ApplyPositiveIntOverride(builder, "JELLYWATCH_METADATA_SCAN_INTERVAL_MINUTES", "WebPush:MetadataScanIntervalMinutes");
-        ApplyPositiveIntOverride(builder, "JELLYWATCH_METADATA_BATCH_SIZE", "WebPush:MetadataBatchSize");
+        builder.Configuration["WebPush:MetadataTimeZoneId"] = Environment.GetEnvironmentVariable("JELLYWATCH_METADATA_TIMEZONE")
+            ?? builder.Configuration["WebPush:MetadataTimeZoneId"];
+        if (int.TryParse(Environment.GetEnvironmentVariable("JELLYWATCH_METADATA_DAILY_HOUR"), out var dailyHour) && dailyHour is >= 0 and <= 23)
+            builder.Configuration["WebPush:MetadataDailyHour"] = dailyHour.ToString();
+        ApplyPositiveIntOverride(builder, "JELLYWATCH_METADATA_ITEM_DELAY_SECONDS", "WebPush:MetadataItemDelaySeconds");
 
         builder.Configuration["DatabaseSettings:DatabasePath"] = Environment.GetEnvironmentVariable("DATABASE_PATH")
             ?? builder.Configuration["DatabaseSettings:DatabasePath"];

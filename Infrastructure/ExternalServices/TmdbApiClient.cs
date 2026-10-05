@@ -330,6 +330,7 @@ public class TmdbApiClient : ITmdbApiClient
                     delay.TotalSeconds, attempt + 1, MaxRetries);
                 await Task.Delay(delay, cancellationToken);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "TMDB request failed for URL: {Url}", url);
