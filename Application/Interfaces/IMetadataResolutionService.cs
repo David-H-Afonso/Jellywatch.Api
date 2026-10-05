@@ -8,11 +8,11 @@ public interface IMetadataResolutionService
 {
     Task<MediaItem?> ResolveSeriesAsync(string jellyfinItemId, string name, int? year = null, int? tmdbId = null, string? imdbId = null);
     Task<MediaItem?> ResolveMovieAsync(string jellyfinItemId, string name, int? year = null, int? tmdbId = null, string? imdbId = null);
-    Task PopulateSeasonsAndEpisodesAsync(int seriesId);
+    Task PopulateSeasonsAndEpisodesAsync(int seriesId, bool forceRefresh = false, CancellationToken cancellationToken = default);
     Task RefreshRatingsAsync(int mediaItemId);
     Task RefreshTranslationsAsync(int mediaItemId);
     Task RefreshImagesAsync(int mediaItemId);
-    Task RefreshMediaItemAsync(int mediaItemId, int? forceTmdbId = null, bool refreshImages = true);
+    Task RefreshMediaItemAsync(int mediaItemId, int? forceTmdbId = null, bool refreshImages = true, CancellationToken cancellationToken = default);
     Task<IdentifyMediaItemResultDto> IdentifyMediaItemAsync(int mediaItemId, int tmdbId);
     Task<List<PosterOptionDto>> GetPosterOptionsAsync(int mediaItemId);
     Task SelectPosterAsync(int mediaItemId, string remoteUrl);

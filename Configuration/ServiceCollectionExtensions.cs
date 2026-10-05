@@ -54,6 +54,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITvMazeApiClient, TvMazeApiClient>();
         services.AddScoped<IMetadataResolutionService, MetadataResolutionService>();
         services.AddHostedService<ImportQueueWorker>();
+        services.AddScoped<IPushNotificationService, PushNotificationService>();
+        services.AddSingleton<IWebPushSender, WebPushSender>();
+        services.AddHostedService<MetadataRefreshWorker>();
+        services.AddHostedService<PushNotificationWorker>();
 
         services.AddScoped<IAssetCacheService, AssetCacheService>();
 
@@ -353,6 +357,20 @@ public static class ServiceCollectionExtensions
         ApplyPositiveIntOverride(builder, "HOUSEHOLD_REFRESH_TOKEN_DAYS", "HouseholdIntegration:RefreshTokenDays");
         ApplyPositiveIntOverride(builder, "HOUSEHOLD_AUTHORIZATION_CODE_MINUTES", "HouseholdIntegration:AuthorizationCodeMinutes");
 
+        builder.Configuration["WebPush:Enabled"] = Environment.GetEnvironmentVariable("JELLYWATCH_WEBPUSH_ENABLED")
+            ?? builder.Configuration["WebPush:Enabled"];
+        builder.Configuration["WebPush:MetadataRefreshEnabled"] = Environment.GetEnvironmentVariable("JELLYWATCH_METADATA_REFRESH_ENABLED")
+            ?? builder.Configuration["WebPush:MetadataRefreshEnabled"];
+        builder.Configuration["WebPush:PublicKey"] = Environment.GetEnvironmentVariable("JELLYWATCH_WEBPUSH_PUBLIC_KEY")
+            ?? builder.Configuration["WebPush:PublicKey"];
+        builder.Configuration["WebPush:PrivateKey"] = Environment.GetEnvironmentVariable("JELLYWATCH_WEBPUSH_PRIVATE_KEY")
+            ?? builder.Configuration["WebPush:PrivateKey"];
+        builder.Configuration["WebPush:Subject"] = Environment.GetEnvironmentVariable("JELLYWATCH_WEBPUSH_SUBJECT")
+            ?? builder.Configuration["WebPush:Subject"];
+        ApplyPositiveIntOverride(builder, "JELLYWATCH_WEBPUSH_WORKER_INTERVAL_SECONDS", "WebPush:WorkerIntervalSeconds");
+        ApplyPositiveIntOverride(builder, "JELLYWATCH_METADATA_SCAN_INTERVAL_MINUTES", "WebPush:MetadataScanIntervalMinutes");
+        ApplyPositiveIntOverride(builder, "JELLYWATCH_METADATA_BATCH_SIZE", "WebPush:MetadataBatchSize");
+
         builder.Configuration["DatabaseSettings:DatabasePath"] = Environment.GetEnvironmentVariable("DATABASE_PATH")
             ?? builder.Configuration["DatabaseSettings:DatabasePath"];
 
@@ -378,6 +396,7 @@ public static class ServiceCollectionExtensions
         services.Configure<SonarrSettings>(configuration.GetSection(SonarrSettings.SectionName));
         services.Configure<RadarrSettings>(configuration.GetSection(RadarrSettings.SectionName));
         services.Configure<HouseholdIntegrationSettings>(configuration.GetSection(HouseholdIntegrationSettings.SectionName));
+        services.Configure<WebPushSettings>(configuration.GetSection(WebPushSettings.SectionName));
     }
 
     private static void ApplyPositiveIntOverride(WebApplicationBuilder builder, string environmentName, string configurationName)

@@ -19,6 +19,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
     private readonly ITvMazeApiClient _tvMazeClient;
     private readonly IAssetCacheService _assetService;
     private readonly ILogger<MetadataResolutionService> _logger;
+    private readonly IPushNotificationService _pushNotifications;
 
     public MetadataResolutionService(
         JellywatchDbContext context,
@@ -26,6 +27,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         IOmdbApiClient omdbClient,
         ITvMazeApiClient tvMazeClient,
         IAssetCacheService assetService,
+        IPushNotificationService pushNotifications,
         ILogger<MetadataResolutionService> logger)
     {
         _context = context;
@@ -33,6 +35,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         _omdbClient = omdbClient;
         _tvMazeClient = tvMazeClient;
         _assetService = assetService;
+        _pushNotifications = pushNotifications;
         _logger = logger;
     }
 
@@ -127,7 +130,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         return mediaItem;
     }
 
-    public async Task PopulateSeasonsAndEpisodesAsync(int seriesId)
+    public async Task PopulateSeasonsAndEpisodesAsync(int seriesId, bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
         var series = await _context.Series
             .Include(s => s.MediaItem)
@@ -145,11 +148,15 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             return;
         }
 
-        var tvDetails = await _tmdbClient.GetTvDetailsAsync(series.MediaItem.TmdbId.Value);
+        // RefreshMediaItemAsync forces the parent details first; that response is now fresh in
+        // the provider cache. Force refresh here applies to each season detail endpoint.
+        var tvDetails = await _tmdbClient.GetTvDetailsAsync(series.MediaItem.TmdbId.Value, cancellationToken: cancellationToken);
         if (tvDetails?.Seasons is null) return;
 
         foreach (var tmdbSeason in tvDetails.Seasons)
         {
+            // Season zero is reserved for specials and should never trigger a season announcement.
+            if (tmdbSeason.SeasonNumber <= 0) continue;
             var existingSeason = series.Seasons.FirstOrDefault(s => s.SeasonNumber == tmdbSeason.SeasonNumber);
 
             if (existingSeason is null)
@@ -167,7 +174,11 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                     TmdbRating = tmdbSeason.VoteAverage > 0 ? tmdbSeason.VoteAverage : null
                 };
                 _context.Seasons.Add(existingSeason);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
+                await _pushNotifications.NotifyNewSeasonAsync(
+                    series.MediaItem.Id,
+                    tmdbSeason.SeasonNumber,
+                    tmdbSeason.Name ?? $"Season {tmdbSeason.SeasonNumber}", cancellationToken);
             }
             else
             {
@@ -182,7 +193,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             }
 
             // Fetch full season details with episodes
-            var seasonDetails = await _tmdbClient.GetTvSeasonAsync(series.MediaItem.TmdbId.Value, tmdbSeason.SeasonNumber);
+            var seasonDetails = await _tmdbClient.GetTvSeasonAsync(series.MediaItem.TmdbId.Value, tmdbSeason.SeasonNumber, forceRefresh, cancellationToken);
 
             // Update season rating from full season details (more accurate than summary)
             if (seasonDetails is not null && seasonDetails.VoteAverage > 0)
@@ -225,6 +236,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
             }
 
             await _context.SaveChangesAsync();
+
         }
 
         // Update series totals
@@ -234,6 +246,21 @@ public partial class MetadataResolutionService : IMetadataResolutionService
 
         // Enrich episodes with air times from TVMaze (TMDB only provides date, not time)
         await EnrichEpisodesWithAirTimesAsync(series);
+
+        foreach (var season in series.Seasons)
+        {
+            var firstEpisode = await _context.Episodes.AsNoTracking()
+                .Where(episode => episode.SeasonId == season.Id && episode.EpisodeNumber == 1)
+                .Select(episode => episode.AirDate)
+                .FirstOrDefaultAsync();
+            if (firstEpisode is null) continue;
+            await _pushNotifications.ScheduleSeasonPremiereAsync(
+                series.MediaItem.Id,
+                season.SeasonNumber,
+                season.Name ?? $"Season {season.SeasonNumber}",
+                firstEpisode,
+                cancellationToken);
+        }
 
         _logger.LogInformation("Populated seasons/episodes for series {SeriesId} ({Name}): {Seasons} seasons, {Episodes} episodes",
             seriesId, series.MediaItem.Title, tvDetails.NumberOfSeasons, tvDetails.NumberOfEpisodes);
@@ -447,7 +474,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         return count;
     }
 
-    public async Task RefreshMediaItemAsync(int mediaItemId, int? forceTmdbId = null, bool refreshImages = true)
+    public async Task RefreshMediaItemAsync(int mediaItemId, int? forceTmdbId = null, bool refreshImages = true, CancellationToken cancellationToken = default)
     {
         var mediaItem = await _context.MediaItems
             .Include(m => m.Series)
@@ -461,7 +488,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
         {
             if (mediaItem.MediaType == MediaType.Series)
             {
-                var details = await _tmdbClient.GetTvDetailsAsync(effectiveTmdbId.Value, forceRefresh: true);
+                var details = await _tmdbClient.GetTvDetailsAsync(effectiveTmdbId.Value, forceRefresh: true, cancellationToken: cancellationToken);
                 if (details is not null)
                 {
                     mediaItem.TmdbId = details.Id;
@@ -490,7 +517,7 @@ public partial class MetadataResolutionService : IMetadataResolutionService
                         mediaItem.Series.TotalEpisodes = details.NumberOfEpisodes;
                         mediaItem.Series.Network ??= details.Networks?.FirstOrDefault()?.Name;
                         await _context.SaveChangesAsync();
-                        await PopulateSeasonsAndEpisodesAsync(mediaItem.Series.Id);
+                        await PopulateSeasonsAndEpisodesAsync(mediaItem.Series.Id, forceRefresh: true, cancellationToken: cancellationToken);
                     }
                 }
             }

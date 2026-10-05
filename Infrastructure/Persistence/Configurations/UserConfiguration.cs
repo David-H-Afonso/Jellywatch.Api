@@ -15,6 +15,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         e.Property(x => x.IsAdmin).HasColumnName("is_admin");
         e.Property(x => x.AvatarUrl).HasColumnName("avatar_url");
         e.Property(x => x.PreferredLanguage).HasColumnName("preferred_language");
+        e.Property(x => x.NotifySeasonUpdates).HasColumnName("notify_season_updates").HasDefaultValue(true);
         e.Property(x => x.CreatedAt).HasColumnName("created_at");
         e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         e.HasIndex(x => x.JellyfinUserId).IsUnique();

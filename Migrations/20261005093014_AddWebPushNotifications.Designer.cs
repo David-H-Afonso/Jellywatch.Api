@@ -3,6 +3,7 @@ using System;
 using Jellywatch.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Jellywatch.Api.Migrations
 {
     [DbContext(typeof(JellywatchDbContext))]
-    partial class JellywatchDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261005093014_AddWebPushNotifications")]
+    partial class AddWebPushNotifications
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.0");
@@ -741,7 +744,7 @@ namespace Jellywatch.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MediaItemId");
+                    b.HasIndex("MediaItemId", "Provider");
 
                     b.ToTable("metadata_refresh_job", (string)null);
                 });
@@ -1334,12 +1337,6 @@ namespace Jellywatch.Api.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("jellyfin_user_id");
-
-                    b.Property<bool>("NotifySeasonUpdates")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(true)
-                        .HasColumnName("notify_season_updates");
 
                     b.Property<string>("PreferredLanguage")
                         .IsRequired()

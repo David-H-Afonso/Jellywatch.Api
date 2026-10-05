@@ -6,8 +6,8 @@ public interface ITmdbApiClient
 {
     Task<List<TmdbTvSearchResult>> SearchTvAsync(string query, int? year = null);
     Task<List<TmdbMovieSearchResult>> SearchMovieAsync(string query, int? year = null);
-    Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false);
-    Task<TmdbSeasonDetails?> GetTvSeasonAsync(int tmdbId, int seasonNumber);
+    Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false, CancellationToken cancellationToken = default);
+    Task<TmdbSeasonDetails?> GetTvSeasonAsync(int tmdbId, int seasonNumber, bool forceRefresh = false, CancellationToken cancellationToken = default);
     Task<TmdbMovieDetails?> GetMovieDetailsAsync(int tmdbId, bool forceRefresh = false);
     Task<TmdbImageCollection?> GetImagesAsync(int tmdbId, string mediaType, bool forceRefresh = false);
     Task<TmdbTranslationsResponse?> GetTranslationsAsync(int tmdbId, string mediaType);

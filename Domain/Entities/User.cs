@@ -9,6 +9,7 @@ public class User
     public string? AvatarUrl { get; set; }
     public string? JellyfinServerUrl { get; set; }
     public string PreferredLanguage { get; set; } = "en";
+    public bool NotifySeasonUpdates { get; set; } = true;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
@@ -16,4 +17,5 @@ public class User
     public virtual ICollection<Watchlist> OwnedWatchlists { get; set; } = new List<Watchlist>();
     public virtual ICollection<WatchlistMember> WatchlistMemberships { get; set; } = new List<WatchlistMember>();
     public virtual UserWatchlistPreference? WatchlistPreference { get; set; }
+    public virtual ICollection<PushSubscription> PushSubscriptions { get; set; } = new List<PushSubscription>();
 }

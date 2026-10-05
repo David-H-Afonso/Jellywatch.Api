@@ -78,7 +78,7 @@ public class TmdbApiClient : ITmdbApiClient
         return fallback?.Results ?? new List<TmdbMovieSearchResult>();
     }
 
-    public async Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false)
+    public async Task<TmdbTvDetails?> GetTvDetailsAsync(int tmdbId, bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
         var cacheKey = $"tv-{tmdbId}";
 
@@ -99,7 +99,7 @@ public class TmdbApiClient : ITmdbApiClient
         }
 
         var url = $"{BaseUrl}/tv/{tmdbId}?language={_settings.PrimaryLanguage}&append_to_response=external_ids,credits";
-        var result = await SendWithRetryAsync<TmdbTvDetails>(url);
+        var result = await SendWithRetryAsync<TmdbTvDetails>(url, cancellationToken);
 
         if (result is not null)
             await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
@@ -107,14 +107,27 @@ public class TmdbApiClient : ITmdbApiClient
         return result;
     }
 
-    public async Task<TmdbSeasonDetails?> GetTvSeasonAsync(int tmdbId, int seasonNumber)
+    public async Task<TmdbSeasonDetails?> GetTvSeasonAsync(int tmdbId, int seasonNumber, bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
         var cacheKey = $"tv-{tmdbId}-season-{seasonNumber}";
-        var cached = await GetCachedResponseAsync<TmdbSeasonDetails>(ExternalProvider.Tmdb, cacheKey);
-        if (cached is not null) return cached;
+        if (!forceRefresh)
+        {
+            var cached = await GetCachedResponseAsync<TmdbSeasonDetails>(ExternalProvider.Tmdb, cacheKey);
+            if (cached is not null) return cached;
+        }
+        else
+        {
+            var stale = await _context.ProviderCacheEntries
+                .FirstOrDefaultAsync(entry => entry.Provider == ExternalProvider.Tmdb && entry.ExternalId == cacheKey);
+            if (stale is not null)
+            {
+                _context.ProviderCacheEntries.Remove(stale);
+                await _context.SaveChangesAsync();
+            }
+        }
 
         var url = $"{BaseUrl}/tv/{tmdbId}/season/{seasonNumber}?language={_settings.PrimaryLanguage}";
-        var result = await SendWithRetryAsync<TmdbSeasonDetails>(url);
+        var result = await SendWithRetryAsync<TmdbSeasonDetails>(url, cancellationToken);
 
         if (result is not null)
             await CacheResponseAsync(ExternalProvider.Tmdb, cacheKey, result, TimeSpan.FromHours(_settings.CacheDetailsTtlHours));
@@ -256,7 +269,7 @@ public class TmdbApiClient : ITmdbApiClient
         return result;
     }
 
-    private async Task<T?> SendWithRetryAsync<T>(string url) where T : class
+    private async Task<T?> SendWithRetryAsync<T>(string url, CancellationToken cancellationToken = default) where T : class
     {
         if (!IsConfigured)
         {
@@ -266,7 +279,7 @@ public class TmdbApiClient : ITmdbApiClient
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
-            await _rateLimiter.WaitAsync();
+            await _rateLimiter.WaitAsync(cancellationToken);
             try
             {
                 // Release the rate limiter after a delay to enforce requests-per-second
@@ -279,14 +292,14 @@ public class TmdbApiClient : ITmdbApiClient
                 var request = new HttpRequestMessage(HttpMethod.Get, authenticatedUrl);
                 request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
 
-                var response = await _httpClient.SendAsync(request);
+                var response = await _httpClient.SendAsync(request, cancellationToken);
 
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
                     var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(Math.Pow(2, attempt + 1));
                     _logger.LogWarning("TMDB rate limited (429). Retrying after {RetryAfter}s (attempt {Attempt}/{MaxRetries})",
                         retryAfter.TotalSeconds, attempt + 1, MaxRetries);
-                    await Task.Delay(retryAfter);
+                    await Task.Delay(retryAfter, cancellationToken);
                     continue;
                 }
 
@@ -301,7 +314,7 @@ public class TmdbApiClient : ITmdbApiClient
                     var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 1));
                     _logger.LogWarning("TMDB server error ({StatusCode}). Retrying after {Delay}s (attempt {Attempt}/{MaxRetries})",
                         (int)response.StatusCode, delay.TotalSeconds, attempt + 1, MaxRetries);
-                    await Task.Delay(delay);
+                    await Task.Delay(delay, cancellationToken);
                     continue;
                 }
 
@@ -315,7 +328,7 @@ public class TmdbApiClient : ITmdbApiClient
                 var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 1));
                 _logger.LogWarning(ex, "TMDB request failed. Retrying after {Delay}s (attempt {Attempt}/{MaxRetries})",
                     delay.TotalSeconds, attempt + 1, MaxRetries);
-                await Task.Delay(delay);
+                await Task.Delay(delay, cancellationToken);
             }
             catch (Exception ex)
             {

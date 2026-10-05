@@ -137,6 +137,34 @@ Configuration via `appsettings.json` or environment variables:
 | `OmdbSettings:ApiKey`           | OMDb API key         |
 | `JwtSettings:SecretKey`         | JWT signing key      |
 | `DatabaseSettings:DatabasePath` | SQLite database path |
+| `WebPush:Enabled` | Enable VAPID push registration and delivery (default `true`; delivery also needs VAPID keys) |
+| `WebPush:PublicKey` / `WebPush:PrivateKey` / `WebPush:Subject` | Server-side Web Push VAPID configuration |
+| `WebPush:MetadataRefreshEnabled` | Periodically refresh tracked TMDB series (default `true`) |
+| `WebPush:MetadataScanIntervalMinutes` / `WebPush:MetadataBatchSize` | Metadata worker interval and per-pass series batch |
+| `WebPush:WorkerIntervalSeconds` | Push delivery worker interval |
+
+Generate a stable VAPID key pair once (for example, `npx --yes web-push generate-vapid-keys`) and store it in the API container environment:
+
+```text
+JELLYWATCH_WEBPUSH_ENABLED=true
+JELLYWATCH_WEBPUSH_PUBLIC_KEY=<VAPID public key>
+JELLYWATCH_WEBPUSH_PRIVATE_KEY=<VAPID private key>
+JELLYWATCH_WEBPUSH_SUBJECT=mailto:you@example.com
+```
+
+The private key stays on the API server and must not be placed in the frontend. Serve Jellywatch on HTTPS,
+sign in, then press **Enable notifications** once on each browser/device so the browser can grant permission
+and register its subscription. Jellywatch's per-user season-notification preference defaults to enabled,
+including existing accounts when this migration is applied; users can turn it off in Settings.
+
+Production may also set `JELLYWATCH_WEBPUSH_PUBLIC_KEY`,
+`JELLYWATCH_WEBPUSH_PRIVATE_KEY`, `JELLYWATCH_WEBPUSH_SUBJECT`,
+`JELLYWATCH_METADATA_REFRESH_ENABLED`, `JELLYWATCH_METADATA_SCAN_INTERVAL_MINUTES`,
+`JELLYWATCH_METADATA_BATCH_SIZE`, and `JELLYWATCH_WEBPUSH_WORKER_INTERVAL_SECONDS`.
+Keep the VAPID private key only in the API server environment. Users opt in on Settings
+per browser/device. New-season and premiere notices are sent only to subscribed users with
+a profile watch state of In Progress or Seen for the series. Premiere notices are scheduled
+for 09:00 Europe/Madrid on the first episode's air date.
 
 ## Project Structure
 
